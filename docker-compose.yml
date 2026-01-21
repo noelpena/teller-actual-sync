@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  teller-actual-sync:
+    build: .
+    container_name: teller-actual-sync
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./static:/app/static
+      # Persistent config and data
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./transaction-data:/app/transaction-data
+      # Actual Budget data directory
+      - ./actual-data:/app/actual-data
+      # mTLS certificates (writable for admin upload)
+      - ./certs:/app/certs
+    environment:
+      # Teller Configuration
+      - APP_ID=${APP_ID}
+      - ENV=${ENV:-sandbox}
+      - TELLER_ACCESS_TOKEN=${TELLER_ACCESS_TOKEN}
+      - TELLER_ACCOUNT_ID=${TELLER_ACCOUNT_ID}
+      
+      # Actual Budget Configuration
+      - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL}
+      - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
+      - ACTUAL_SYNC_ID=${ACTUAL_SYNC_ID}
+      - ACTUAL_ACCOUNT_ID=${ACTUAL_ACCOUNT_ID}
+      - ACTUAL_DATA_DIR=/app/actual-data
+      
+      # Sync Configuration
+      - DAYS_TO_SYNC=${DAYS_TO_SYNC:-7}
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
+      
+      # SSL Certificates (optional, for production Teller)
+      - CERT=${CERT}
+      - CERT_KEY=${CERT_KEY}
+      
+      # Node Environment
+      - NODE_ENV=production
+      - TZ=${TZ:-America/New_York}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8001/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      # CasaOS labels for better integration
+      - "casaos.name=Teller-Actual Sync"
+      - "casaos.category=Finance"
+      - "casaos.description=Automated bank transaction sync to Actual Budget"
+      - "casaos.icon=https://actual-budget.com/img/favicon.png"

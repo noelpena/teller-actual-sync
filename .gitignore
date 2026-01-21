@@ -1,0 +1,7 @@
+/node_modules
+/transaction-data
+/logs
+config.json
+/certs/*
+/actual-data/*
+.env

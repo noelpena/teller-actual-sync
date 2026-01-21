@@ -1,0 +1,17 @@
+{
+  "teller": {
+    "accessToken": "your_teller_access_token_here",
+    "accountId": "your_teller_account_id_here"
+  },
+  "actual": {
+    "dataDir": "/app/actual-data",
+    "serverURL": "http://your-actual-server:5006",
+    "password": "your_actual_password",
+    "syncId": "your_budget_sync_id",
+    "accountId": "your_actual_account_id_here"
+  },
+  "sync": {
+    "daysToSync": 7,
+    "cronSchedule": "0 2 * * *"
+  }
+}
