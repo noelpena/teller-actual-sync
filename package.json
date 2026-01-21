@@ -1,0 +1,32 @@
+{
+  "name": "teller-actual-sync",
+  "version": "1.0.0",
+  "description": "Automated bank transaction sync from Teller to Actual Budget",
+  "private": true,
+  "type": "module",
+  "main": "teller.js",
+  "scripts": {
+    "start": "node teller.js",
+    "sync": "node sync.js",
+    "dev": "node --watch teller.js"
+  },
+  "keywords": [
+    "actual-budget",
+    "teller",
+    "banking",
+    "automation",
+    "homelab"
+  ],
+  "dependencies": {
+    "@actual-app/api": "^25.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6",
+    "multer": "^1.4.5-lts.1",
+    "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
