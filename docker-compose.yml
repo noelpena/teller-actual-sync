@@ -15,7 +15,6 @@ services:
     ports:
       - "8001:8001"
     volumes:
-      - ./static:/app/static
       # Persistent config and data
       - ./config:/app/config
       - ./logs:/app/logs
@@ -56,8 +55,10 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      # CasaOS labels for better integration
+      # CasaOS labels
       - "casaos.name=Teller-Actual Sync"
       - "casaos.category=Finance"
       - "casaos.description=Automated bank transaction sync to Actual Budget"
       - "casaos.icon=https://actual-budget.com/img/favicon.png"
+      - "casaos.index=/"
+      - "casaos.port_map=8001"
