@@ -1,13 +1,20 @@
+# Dependencies
 /node_modules
+
+# Runtime data directories (created by application)
 /transaction-data
 /logs
+/actual-data
+
+# Configuration files with secrets
 config.json
+/config/config.json
+
+# Certificates (contain sensitive keys)
 /certs/*
-/actual-data/*
+/certs/*.pem
+
+# Environment files (contain credentials)
 .env
 .env.*
-/certs/*.pem
-/config/config.json
-/actual-data/
-/logs/
-/transaction-data/
+.env.hide

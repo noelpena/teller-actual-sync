@@ -3,14 +3,25 @@ node_modules
 npm-debug.log
 yarn-error.log
 
-# Git
+# Git and CI/CD
 .git
 .gitignore
+.github
 
-# Environment
+# Environment files (contain credentials)
 .env
+.env.*
 .env.local
 .env.*.local
+.env.hide
+.env.example
+
+# Certificates (security-sensitive)
+certs
+certs/*.pem
+
+# Configuration examples (not needed in image)
+config.json.example
 
 # Build artifacts
 dist
@@ -30,12 +41,16 @@ Thumbs.db
 *.swp
 *.swo
 
-# Runtime data
+# Runtime data (created by application)
 actual-data
 transaction-data
 config/config.json
 
-# Docker
+# Docker files (not needed in image)
 Dockerfile
 docker-compose.yml
 .dockerignore
+
+# Documentation (saves image size)
+README.md
+LICENSE
