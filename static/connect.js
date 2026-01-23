@@ -1,6 +1,73 @@
 const { applicationId: APPLICATION_ID, environment: ENVIRONMENT } = window.TELLER_CONFIG;
-const BASE_URL = 'http://localhost:8001/api';
-const BASE_URL2 = 'http://localhost:8001';
+const BASE_URL = `${window.location.origin}/api`;
+const BASE_URL2 = window.location.origin;
+
+/* ---------------- Global State ---------------- */
+let enrollmentData = null;
+
+/* ---------------- Continue Button ---------------- */
+function showContinueButton(enrollment) {
+  enrollmentData = enrollment;
+  const container = document.getElementById('continue-setup-container');
+  if (container) {
+    container.classList.remove('hidden');
+  }
+}
+
+async function handleContinueToSetup() {
+  if (!enrollmentData) {
+    alert('No enrollment data available. Please connect your bank account first.');
+    return;
+  }
+
+  const btn = document.getElementById('continue-setup-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    console.log('📤 Manual save: Fetching accounts...');
+    const accountsResponse = await fetch(`${BASE_URL}/accounts`, {
+      headers: {
+        'Authorization': enrollmentData.accessToken
+      }
+    });
+
+    const accounts = await accountsResponse.json();
+    console.log('📋 Accounts:', accounts);
+
+    if (!accounts || accounts.length === 0) {
+      throw new Error('No accounts found');
+    }
+
+    const accountId = accounts[0].id;
+
+    console.log('📤 Manual save: Sending to backend...');
+    const response = await fetch(`${BASE_URL2}/api/setup/save-teller`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accessToken: enrollmentData.accessToken,
+        accountId: accountId,
+        userId: enrollmentData.user.id
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      console.log('✅ Manual save successful');
+      alert('Bank account connected successfully! Redirecting to setup wizard...');
+      window.location.href = result.redirectTo || '/setup';
+    } else {
+      throw new Error(result.error || 'Failed to save');
+    }
+  } catch (error) {
+    console.error('❌ Manual save failed:', error);
+    alert(`Failed to save: ${error.message}. Please try again.`);
+    btn.disabled = false;
+    btn.textContent = 'Continue to Setup →';
+  }
+}
 
 /* ---------------- Store ---------------- */
 class TellerStore {
@@ -445,6 +512,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
         // Fetch the accounts using the access token to get the account IDs
         let accountId = null;
+        let fetchSuccess = false;
 
         try {
           console.log('📡 Fetching accounts from Teller API...');
@@ -460,6 +528,7 @@ document.addEventListener('DOMContentLoaded', function(){
           // Get the first account
           if (accounts && accounts.length > 0) {
             accountId = accounts[0].id;
+            fetchSuccess = true;
             console.log('✅ Account ID extracted:', accountId);
           }
         } catch (fetchError) {
@@ -472,9 +541,10 @@ document.addEventListener('DOMContentLoaded', function(){
           userId: e.user?.id || 'missing'
         });
 
-        if (!accountId) {
-          console.error('❌ No account ID found');
-          alert('Could not find account ID. Please try again or configure manually.');
+        if (!fetchSuccess || !accountId) {
+          console.error('❌ No account ID found - showing manual continue button');
+          // Show the manual continue button
+          showContinueButton(e);
           return;
         }
 
@@ -502,12 +572,14 @@ document.addEventListener('DOMContentLoaded', function(){
           }, 1000);
         } else {
           console.error('❌ Failed to save credentials:', result.error);
-          alert('Connected to bank, but failed to save credentials. Please try again or configure manually.');
+          // Show the manual continue button
+          showContinueButton(e);
         }
       } catch (error) {
         console.error('❌ Error auto-saving Teller credentials:', error);
         console.error('Error details:', error.stack);
-        alert('Connected to bank, but failed to save credentials. You can configure manually in the admin panel.');
+        // Show the manual continue button
+        showContinueButton(e);
       }
     }
   });
@@ -517,12 +589,21 @@ document.addEventListener('DOMContentLoaded', function(){
     onDisconnect: () => { enrollmentHandler.clear(); userHandler.clear(); store.clear(); location.reload(); }
   });
 
+  // Continue to Setup button handler
+  const continueBtn = document.getElementById('continue-setup-btn');
+  if (continueBtn) {
+    continueBtn.onclick = handleContinueToSetup;
+  }
+
   const e = store.getEnrollment();
   if (e) {
     document.getElementById('console-container').classList.remove('hidden');
     enrollmentHandler.onEnrollment(e);
     userHandler.onEnrollment(e);
     statusHandler.onEnrollment(e);
+
+    // Show the continue button for existing enrollment
+    showContinueButton(e);
 
     // Auto-save if user is already connected and hasn't saved yet
     (async () => {

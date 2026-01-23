@@ -16,6 +16,6 @@
   },
   "sync": {
     "daysToSync": 7,
-    "cronSchedule": "0 2 * * *"
+    "cronSchedule": "0 8 * * *"
   }
 }

@@ -1,4 +1,4 @@
-const BASE_URL = 'http://localhost:8001';
+const BASE_URL = window.location.origin;
 
 document.addEventListener('DOMContentLoaded', function() {
   const form = document.getElementById('setup-form');
@@ -167,8 +167,16 @@ document.addEventListener('DOMContentLoaded', function() {
       const response = await fetch(`${BASE_URL}/api/config/status`);
       const status = await response.json();
 
+      // If Teller is not configured, redirect to connect first
+      if (!status.hasTellerConfig) {
+        console.log('Teller not configured, redirecting to /connect');
+        window.location.href = '/connect';
+        return;
+      }
+
+      // If both Teller and Actual are configured, redirect to admin
       if (status.hasActualConfig) {
-        // Config already exists, redirect to admin
+        console.log('Configuration complete, redirecting to /admin');
         window.location.href = '/admin';
       }
     } catch (error) {

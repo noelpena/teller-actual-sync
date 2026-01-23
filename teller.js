@@ -184,16 +184,27 @@ app.post("/api/setup/save-app-id-and-certs", upload.fields([
     // Preserve the environment field name from existing config
     const envField = existingConfig.teller?.environment ? 'environment' : 'env';
 
-    // Merge with existing config
+    // Merge with existing config, ensuring all sections exist with placeholders
     const newConfig = {
-      ...existingConfig,
       teller: {
-        ...existingConfig.teller,
         appId,
+        accessToken: existingConfig.teller?.accessToken || "your_teller_access_token_here",
+        accountId: existingConfig.teller?.accountId || "your_teller_account_id_here",
         [envField]: existingConfig.teller?.[envField] || "development",
-        certPath: certsExist ? certPath : existingConfig.teller?.certPath,
-        certKeyPath: certsExist ? keyPath : existingConfig.teller?.certKeyPath,
+        certPath: certsExist ? certPath : existingConfig.teller?.certPath || "",
+        certKeyPath: certsExist ? keyPath : existingConfig.teller?.certKeyPath || "",
       },
+      actual: existingConfig.actual || {
+        dataDir: "/app/actual-data",
+        serverURL: "http://your-actual-server:5006",
+        password: "your_actual_password",
+        syncId: "your_budget_sync_id",
+        accountId: "your_actual_account_id_here"
+      },
+      sync: existingConfig.sync || {
+        daysToSync: 7,
+        cronSchedule: "0 8 * * *"
+      }
     };
 
     fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
