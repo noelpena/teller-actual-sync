@@ -40,7 +40,7 @@ Automated Docker container that syncs bank transactions from Teller to Actual Bu
 docker pull noelpena/teller-actual-sync:latest
 
 # Or build locally
-git clone YOUR_REPO_URL
+git clone https://github.com/noelpena/teller-actual-sync.git
 cd teller-actual-sync
 docker-compose up -d
 ```
@@ -125,7 +125,7 @@ version: '3.8'
 
 services:
   teller-actual-sync:
-    image: YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest
+    image: noelpena/teller-actual-sync:latest
     # Or build locally:
     # build: .
     container_name: teller-actual-sync
@@ -155,7 +155,7 @@ Start:
 docker-compose up -d
 ```
 
-**Note**: You no longer need to set `APP_ID` in `.env`! The guided setup wizard will handle all configuration including:
+**Note**: You no longer need to set `APP_ID` in `.env`! You can if you want still add the env variables in the docker compose file, however, the guided setup wizard will handle all configuration including:
 - Teller Application ID
 - mTLS certificate upload
 - Bank connection via Teller Connect
@@ -174,7 +174,7 @@ docker run -d \
   -v $(pwd)/actual-data:/app/actual-data \
   -v $(pwd)/certs:/app/certs \
   -e TZ=America/New_York \
-  YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest
+  noelpena/teller-actual-sync:latest
 ```
 
 Then visit `http://localhost:8001` to complete setup through the guided wizard.
@@ -196,11 +196,11 @@ The app supports two configuration methods (in priority order):
 |----------|-------------|---------|----------|
 | **Teller Settings** |
 | `APP_ID` | Teller Application ID | - | ✅ |
-| `ENV` | Environment: `sandbox`, `development`, or `production` | `sandbox` | ❌ |
+| `ENV` | Environment: `development`, or `production` | `development` | ❌ |
 | `TELLER_ACCESS_TOKEN` | Teller OAuth access token (auto-set by wizard) | - | ✅* |
 | `TELLER_ACCOUNT_ID` | Bank account ID to sync (auto-set by wizard) | - | ✅* |
-| `CERT` | Path to mTLS certificate (required for prod) | - | ❌ |
-| `CERT_KEY` | Path to mTLS private key (required for prod) | - | ❌ |
+| `CERT` | Path to mTLS certificate (required for prod) | - | ✅* |
+| `CERT_KEY` | Path to mTLS private key (required for prod) | - | ✅* |
 | **Actual Budget Settings** |
 | `ACTUAL_SERVER_URL` | Actual Budget server URL | - | ✅* |
 | `ACTUAL_PASSWORD` | Server password | - | ✅* |
@@ -209,7 +209,7 @@ The app supports two configuration methods (in priority order):
 | `ACTUAL_DATA_DIR` | Data directory for Actual cache | `/app/actual-data` | ❌ |
 | **Sync Settings** |
 | `DAYS_TO_SYNC` | Days of transactions to fetch | `7` | ❌ |
-| `CRON_SCHEDULE` | Cron expression for auto-sync | `0 2 * * *` | ❌ |
+| `CRON_SCHEDULE` | Cron expression for auto-sync | `0 8 * * *` | ❌ |
 | `TZ` | Timezone | `America/New_York` | ❌ |
 | `PORT` | Server port | `8001` | ❌ |
 
@@ -286,20 +286,18 @@ Response:
 2. Go to **App Store** → **Custom Install**
 3. Select **Docker Compose**
 4. Paste the `docker-compose.yml` content
-5. Set `APP_ID` environment variable
-6. Click **Install**
-7. Access via **My Apps** or visit `http://your-casaos-ip:8001`
+5. Click **Install**
+6. Access via **My Apps** or visit `http://your-casaos-ip:8001`
 
 ### Method 2: Import from Docker Hub
 
 1. Open **CasaOS App Store**
 2. Click **Custom Install**
 3. Select **Docker Image**
-4. Enter: `YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest`
+4. Enter: `noelpena/teller-actual-sync:latest`
 5. Configure:
    - Port: `8001`
    - Volumes: Add the 5 volumes listed in docker-compose
-   - Environment: Add `APP_ID`
 6. Click **Install**
 
 ---
@@ -402,7 +400,7 @@ teller-actual-sync/
 ├── Dockerfile             # Container definition
 ├── docker-compose.yml     # Docker Compose configuration
 ├── package.json           # Node.js dependencies
-├── .env                   # Your configuration (create this)
+├── .env                   # Optional: Your configuration (create this)
 ├── .env.example           # Example environment variables
 ├── static/                # Web UI files
 │   ├── connect.html       # Teller Connect UI
@@ -420,7 +418,7 @@ teller-actual-sync/
 ├── transaction-data/      # 📂 Volume: Transaction backups
 │   └── transactions_*.json
 ├── actual-data/           # 📂 Volume: Actual Budget cache
-└── certs/                 # 📂 Volume: mTLS certificates (production)
+└── certs/                 # 📂 Volume: mTLS certificates
     ├── certificate.pem
     └── private_key.pem
 ```
@@ -449,7 +447,7 @@ teller-actual-sync/
 
 ### Sync Process
 
-1. **Scheduled Trigger**: Cron job runs at configured time (default: 2 AM)
+1. **Scheduled Trigger**: Cron job runs at configured time (default: 8 AM)
 2. **Fetch from Teller**: Retrieves last N days of transactions (default: 7)
 3. **Transform Data**: Converts Teller format to Actual Budget format
 4. **Import to Actual**: Uses Actual Budget API to import transactions
@@ -516,7 +514,7 @@ services:
 - **Privacy-Focused Users**: All data stays on your infrastructure
 - **Budget Automation**: Set it and forget it transaction imports
 - **Multiple Accounts**: Configure multiple instances for different banks
-- **Development**: Use sandbox mode to test Actual Budget integrations
+- **Development**: Use development mode to import transactions for free
 
 ---
 
@@ -534,10 +532,8 @@ services:
 - 🔜 Multi-account support (sync multiple banks)
 - 🔜 Email/webhook notifications for sync failures
 - 🔜 Transaction categorization rules
-- 🔜 Custom field mapping
 - 🔜 Sync frequency per account
 - 🔜 Web-based log viewer with filtering
-- 🔜 Prometheus metrics endpoint
 - 🔜 Account balance reconciliation
 
 ---
@@ -550,7 +546,7 @@ Contributions are welcome! This project is designed for the Actual Budget homela
 
 ```bash
 # Clone repository
-git clone YOUR_REPO_URL
+git clone https://github.com/noelpena/teller-actual-sync.git
 cd teller-actual-sync
 
 # Install dependencies
@@ -589,9 +585,7 @@ MIT License - Feel free to use and modify for personal use.
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](YOUR_REPO_URL/issues)
-- **Discussions**: [GitHub Discussions](YOUR_REPO_URL/discussions)
-- **Actual Budget Discord**: Join for community support
+- **Issues**: [GitHub Issues](https://github.com/noelpena/teller-actual-sync/issues)
 
 ---
 
