@@ -27,9 +27,10 @@ function loadConfig() {
   // Merge with env vars (config.json takes priority, env vars as fallback)
   return {
     teller: {
+      appId: fileConfig.teller?.appId || process.env.APP_ID,
       accessToken: fileConfig.teller?.accessToken || process.env.TELLER_ACCESS_TOKEN,
       accountId: fileConfig.teller?.accountId || process.env.TELLER_ACCOUNT_ID,
-      env: fileConfig.teller?.env || process.env.ENV || "sandbox",
+      env: fileConfig.teller?.env || fileConfig.teller?.environment || process.env.ENV || "sandbox",
       certPath: fileConfig.teller?.certPath || process.env.CERT,
       certKeyPath: fileConfig.teller?.certKeyPath || process.env.CERT_KEY,
     },
