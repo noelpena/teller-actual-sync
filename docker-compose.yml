@@ -2,7 +2,14 @@ version: '3.8'
 
 services:
   teller-actual-sync:
-    build: .
+    # Option 1: Use pre-built image from Docker Hub (recommended)
+    # Uncomment the line below and comment out 'build: .' to use Docker Hub image
+    image: noelpena/teller-actual-sync:latest
+
+    # Option 2: Build locally from source
+    # Comment out this line if using Docker Hub image above
+    # build: .
+
     container_name: teller-actual-sync
     restart: unless-stopped
     ports:
@@ -20,7 +27,7 @@ services:
     environment:
       # Teller Configuration
       - APP_ID=${APP_ID}
-      - ENV=${ENV:-sandbox}
+      - ENV=${ENV:-development}
       - TELLER_ACCESS_TOKEN=${TELLER_ACCESS_TOKEN}
       - TELLER_ACCOUNT_ID=${TELLER_ACCOUNT_ID}
       
@@ -33,7 +40,7 @@ services:
       
       # Sync Configuration
       - DAYS_TO_SYNC=${DAYS_TO_SYNC:-7}
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 8 * * *}
       
       # SSL Certificates (optional, for production Teller)
       - CERT=${CERT}

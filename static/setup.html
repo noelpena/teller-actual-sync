@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Wizard - Teller-Actual Sync</title>
+  <link rel="stylesheet" href="/static/setup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="setup-card">
+      <div class="header">
+        <h1>🎉 Bank Account Connected!</h1>
+        <p class="subtitle">Now let's connect to your Actual Budget instance</p>
+      </div>
+
+      <form id="setup-form">
+        <div class="section">
+          <h2>Actual Budget Server</h2>
+          <p class="section-description">Enter your Actual Budget server details</p>
+
+          <div class="form-group">
+            <label for="serverURL">
+              Server URL
+              <span class="required">*</span>
+              <span class="tooltip" title="The URL of your Actual Budget server (e.g., http://localhost:5006 or https://actual.yourdomain.com)">ℹ️</span>
+            </label>
+            <input
+              type="url"
+              id="serverURL"
+              name="serverURL"
+              placeholder="http://localhost:5006"
+              required
+            >
+            <small class="help-text">Include http:// or https://</small>
+          </div>
+
+          <div class="form-group">
+            <label for="password">
+              Server Password
+              <span class="required">*</span>
+            </label>
+            <input
+              type="password"
+              id="password"
+              name="password"
+              placeholder="Enter your server password"
+              required
+            >
+            <small class="help-text">Your Actual Budget server password</small>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Budget Configuration</h2>
+          <p class="section-description">Specify which budget and account to sync to</p>
+
+          <div class="form-group">
+            <label for="syncId">
+              Budget Sync ID
+              <span class="required">*</span>
+              <span class="tooltip" title="Found in Actual Budget: Settings → Show Advanced Settings → Sync ID">ℹ️</span>
+            </label>
+            <input
+              type="text"
+              id="syncId"
+              name="syncId"
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              required
+            >
+            <small class="help-text">Settings → Advanced → Sync ID</small>
+          </div>
+
+          <div class="form-group">
+            <label for="accountId">
+              Account ID
+              <span class="required">*</span>
+              <span class="tooltip" title="Found in the URL when viewing an account: /accounts/{ID}">ℹ️</span>
+            </label>
+            <input
+              type="text"
+              id="accountId"
+              name="accountId"
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              required
+            >
+            <small class="help-text">Open the account in Actual Budget, the ID is in the URL</small>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Sync Settings</h2>
+          <p class="section-description">Configure how often transactions are synced</p>
+
+          <div class="form-group">
+            <label for="daysToSync">
+              Days to Sync
+              <span class="tooltip" title="Number of days of historical transactions to fetch on each sync">ℹ️</span>
+            </label>
+            <input
+              type="number"
+              id="daysToSync"
+              name="daysToSync"
+              value="7"
+              min="1"
+              max="90"
+            >
+            <small class="help-text">Number of days of transactions to fetch (default: 7)</small>
+          </div>
+
+          <div class="form-group">
+            <label for="cronSchedule">
+              Sync Schedule (Cron)
+              <span class="tooltip" title="Cron expression for automated sync schedule">ℹ️</span>
+            </label>
+            <input
+              type="text"
+              id="cronSchedule"
+              name="cronSchedule"
+              value="0 8 * * *"
+              placeholder="0 8 * * *"
+            >
+            <small class="help-text">Default: 0 8 * * * (8 AM daily) - <a href="https://crontab.guru/" target="_blank">crontab.guru</a></small>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="test-connection" class="btn btn-secondary">
+            Test Connection
+          </button>
+          <button type="submit" id="save-config" class="btn btn-primary">
+            Save & Complete Setup
+          </button>
+        </div>
+      </form>
+
+      <div id="status-message" class="status-message hidden"></div>
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p>Testing connection...</p>
+      </div>
+    </div>
+
+    <div class="help-card">
+      <h3>Need Help?</h3>
+      <div class="help-section">
+        <h4>Finding Your Sync ID</h4>
+        <ol>
+          <li>Open Actual Budget</li>
+          <li>Go to Settings (gear icon)</li>
+          <li>Click "Show Advanced Settings"</li>
+          <li>Copy the Sync ID</li>
+        </ol>
+      </div>
+      <div class="help-section">
+        <h4>Finding Your Account ID</h4>
+        <ol>
+          <li>Open the account you want to sync in Actual Budget</li>
+          <li>Look at the browser URL bar</li>
+          <li>Copy the ID after /accounts/</li>
+          <li>Example: /accounts/<strong>abc123-def456</strong></li>
+        </ol>
+      </div>
+      <div class="help-section">
+        <h4>Server URL Examples</h4>
+        <ul>
+          <li><code>http://localhost:5006</code> - Local installation</li>
+          <li><code>http://192.168.1.100:5006</code> - Local network</li>
+          <li><code>https://actual.yourdomain.com</code> - Remote server</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/setup.js"></script>
+</body>
+</html>

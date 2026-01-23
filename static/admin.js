@@ -46,7 +46,7 @@ async function loadDashboard() {
     // Load last sync status
     const logsRes = await fetch('/admin/api/logs');
     const { logs } = await logsRes.json();
-    
+
     if (logs && logs.length > 0) {
       const lastLog = logs[0];
       document.getElementById('lastSyncTime').textContent = new Date(lastLog.timestamp).toLocaleString();
@@ -54,7 +54,7 @@ async function loadDashboard() {
       document.getElementById('lastSyncStatus').className = `text-lg font-semibold ${
         lastLog.status === 'SUCCESS' ? 'status-success' : 'status-error'
       }`;
-      
+
       const count = lastLog.stats?.added || 0;
       document.getElementById('lastSyncCount').textContent = count;
     } else {
@@ -62,20 +62,152 @@ async function loadDashboard() {
       document.getElementById('lastSyncStatus').textContent = 'N/A';
       document.getElementById('lastSyncCount').textContent = '0';
     }
-    
+
     // Load current config
     const configRes = await fetch('/admin/api/config');
     const config = await configRes.json();
-    
+
     document.getElementById('configEnv').textContent = config.ENV || 'sandbox';
     document.getElementById('configTellerAccount').textContent = config.TELLER_ACCOUNT_ID || 'Not set';
     document.getElementById('configActualServer').textContent = config.ACTUAL_SERVER_URL || 'Not set';
     document.getElementById('configDaysToSync').textContent = config.DAYS_TO_SYNC || '7';
     document.getElementById('configCronSchedule').textContent = config.CRON_SCHEDULE || '0 2 * * *';
-    
+
+    // Load setup status
+    await loadSetupStatus();
+
   } catch (error) {
     console.error('Error loading dashboard:', error);
     showToast('Error loading dashboard', 'error');
+  }
+}
+
+// Load setup status and check configuration completeness
+async function loadSetupStatus() {
+  try {
+    const statusRes = await fetch('/api/config/status');
+    const status = await statusRes.json();
+
+    // Update Teller status
+    const tellerIcon = document.getElementById('tellerStatusIcon');
+    const tellerText = document.getElementById('tellerStatusText');
+    const tellerCard = document.getElementById('tellerStatusCard');
+
+    if (status.hasTellerConfig) {
+      tellerIcon.textContent = '✅';
+      tellerText.textContent = 'Connected and configured';
+      tellerCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+      tellerCard.classList.add('border-green-300', 'bg-green-50');
+    } else {
+      tellerIcon.textContent = '⚠️';
+      tellerText.textContent = 'Not configured - Connect your bank account';
+      tellerCard.classList.remove('border-green-300', 'bg-green-50');
+      tellerCard.classList.add('border-yellow-300', 'bg-yellow-50');
+    }
+
+    // Update Actual Budget status
+    const actualIcon = document.getElementById('actualStatusIcon');
+    const actualText = document.getElementById('actualStatusText');
+    const actualCard = document.getElementById('actualStatusCard');
+
+    if (status.hasActualConfig) {
+      actualIcon.textContent = '✅';
+      actualText.textContent = 'Connected and configured';
+      actualCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+      actualCard.classList.add('border-green-300', 'bg-green-50');
+    } else {
+      actualIcon.textContent = '⚠️';
+      actualText.textContent = 'Not configured - Set up Actual Budget connection';
+      actualCard.classList.remove('border-green-300', 'bg-green-50');
+      actualCard.classList.add('border-yellow-300', 'bg-yellow-50');
+    }
+
+  } catch (error) {
+    console.error('Error loading setup status:', error);
+  }
+}
+
+// Test Teller connection
+async function testTellerConnection() {
+  const btn = document.getElementById('testTellerBtn');
+  const originalText = btn.textContent;
+
+  try {
+    btn.textContent = 'Testing...';
+    btn.disabled = true;
+
+    // Check if config exists first
+    const statusRes = await fetch('/api/config/status');
+    const status = await statusRes.json();
+
+    if (!status.hasTellerConfig) {
+      showToast('Teller not configured. Please connect your bank account first.', 'error');
+      return;
+    }
+
+    // Call the backend test endpoint (it will load config from file)
+    const testRes = await fetch('/api/test/teller', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}) // Backend will load all config from file
+    });
+
+    const result = await testRes.json();
+
+    if (result.success) {
+      showToast(`✅ Connected to ${result.institution} - ${result.accountName}`, 'success');
+    } else {
+      showToast(`❌ Connection failed: ${result.error}`, 'error');
+    }
+
+  } catch (error) {
+    console.error('Error testing Teller connection:', error);
+    showToast(`❌ Failed to test connection: ${error.message}`, 'error');
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+}
+
+// Test Actual Budget connection
+async function testActualConnection() {
+  const btn = document.getElementById('testActualBtn');
+  const originalText = btn.textContent;
+
+  try {
+    btn.textContent = 'Testing...';
+    btn.disabled = true;
+
+    // Check if config exists first
+    const statusRes = await fetch('/api/config/status');
+    const status = await statusRes.json();
+
+    if (!status.hasActualConfig) {
+      showToast('Actual Budget not configured. Please complete setup first.', 'error');
+      return;
+    }
+
+    // Call the backend test endpoint (it will load config from file)
+    const testRes = await fetch('/api/test/actual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}) // Backend will load all config from file
+    });
+
+    const result = await testRes.json();
+
+    if (result.success) {
+      showToast('✅ Successfully connected to Actual Budget!', 'success');
+    } else {
+      showToast(`❌ Connection failed: ${result.error}`, 'error');
+    }
+
+  } catch (error) {
+    console.error('Error testing Actual Budget connection:', error);
+    showToast(`❌ Failed to test connection: ${error.message}`, 'error');
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
   }
 }
 
@@ -311,6 +443,10 @@ document.getElementById('syncNowBtn').addEventListener('click', async () => {
     btn.textContent = originalText;
   }
 });
+
+// Test connection button event listeners
+document.getElementById('testTellerBtn').addEventListener('click', testTellerConnection);
+document.getElementById('testActualBtn').addEventListener('click', testActualConnection);
 
 // Initial load
 loadDashboard();

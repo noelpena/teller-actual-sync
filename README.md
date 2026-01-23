@@ -1,86 +1,169 @@
-Teller → Actual Budget Sync
+# Teller → Actual Budget Sync
+
 Automated Docker container that syncs bank transactions from Teller to Actual Budget. Perfect for homelabbers running CasaOS or any Docker environment.
 
-Features
-🔄 Automated Daily Sync - Runs on schedule via cron (default: 2 AM daily)
-🏠 Self-Hosted - Runs entirely on your homelab
-🐳 Docker Ready - Easy deployment with Docker Compose
-📊 Logging - Track sync history and status
-🔒 Secure - All credentials stay on your local network
-🎯 Manual Sync - Trigger sync anytime via API endpoint
-Quick Start
-1. Prerequisites
-Docker & Docker Compose installed
-Teller account with API access token
-Actual Budget server running (self-hosted or cloud)
-Your bank account connected to Teller
-2. Clone & Configure
-bash
-# Clone the repository
-git clone <your-repo-url>
+## ✨ Features
+
+- **🎯 Guided Setup Wizard** - No manual configuration needed!
+- **🔄 Automated Daily Sync** - Runs on schedule via cron (customizable)
+- **🏠 Self-Hosted** - Runs entirely on your homelab
+- **🐳 Docker Ready** - Easy deployment with Docker Compose
+- **📊 Admin Dashboard** - Monitor sync status and configure settings
+- **🔒 Secure** - All credentials stay on your local network
+- **⚡ Manual Sync** - Trigger sync anytime via dashboard or API
+
+---
+
+## 🚀 Quick Start (5 Minutes)
+
+### Prerequisites
+
+- **Docker & Docker Compose** installed
+- **Teller account** (sign up at [teller.io](https://teller.io))
+- **Teller mTLS certificates** (download from [Teller Dashboard](https://teller.io/dashboard/certificates))
+- **Actual Budget server** running (self-hosted or cloud)
+
+### Step 1: Get Teller Credentials
+
+1. Visit [Teller Dashboard](https://teller.io/dashboard)
+2. Create a new application (or use existing)
+3. Copy your **Application ID** (starts with `app_`)
+4. Download your **mTLS certificates**:
+   - Go to **Certificates** section
+   - Download `certificate.pem`
+   - Download `private_key.pem`
+
+### Step 2: Run the Container
+
+```bash
+# Pull the Docker image
+docker pull noelpena/teller-actual-sync:latest
+
+# Or build locally
+git clone YOUR_REPO_URL
 cd teller-actual-sync
-
-# Copy example environment file
-cp .env.example .env
-
-# Edit .env with your credentials
-nano .env
-3. Get Required IDs
-Teller Access Token & Account ID:
-
-Log into Teller Connect in the web UI (http://localhost:8001)
-Connect your bank account
-Copy the Access Token and Account ID from the status bar
-Actual Budget Info:
-
-Open your Actual Budget server
-Go to Settings → Show Advanced Settings → Sync ID (copy this)
-In the account list, click on the account you want to sync
-The account ID is in the URL: /accounts/{ACCOUNT_ID}
-4. Run with Docker Compose
-bash
-# Build and start the container
 docker-compose up -d
+```
 
-# View logs
-docker-compose logs -f
+Start the container:
 
-# Check sync logs
-docker-compose exec teller-actual-sync cat logs/sync.log
-5. Test Manual Sync
-bash
-# Trigger a manual sync
-curl -X POST http://localhost:8001/manual-sync
+```bash
+docker-compose up -d
+```
 
-# View sync logs via API
-curl http://localhost:8001/sync-logs
-Configuration
-Environment Variables
-Variable	Description	Default	Required
-APP_ID	Teller Application ID	-	✅
-TELLER_ACCESS_TOKEN	Teller access token	-	✅
-TELLER_ACCOUNT_ID	Teller account ID to sync	-	✅
-ACTUAL_SERVER_URL	Actual Budget server URL	-	✅
-ACTUAL_PASSWORD	Actual Budget password	-	✅
-ACTUAL_SYNC_ID	Budget sync ID	-	✅
-ACTUAL_ACCOUNT_ID	Actual account ID	-	✅
-DAYS_TO_SYNC	Days of transactions to fetch	7	❌
-CRON_SCHEDULE	Cron schedule for auto-sync	0 2 * * *	❌
-TZ	Timezone	America/New_York	❌
-Cron Schedule Examples
-0 2 * * * - Daily at 2 AM
-0 */6 * * * - Every 6 hours
-0 8,20 * * * - Twice daily at 8 AM and 8 PM
-0 0 * * 1 - Weekly on Monday at midnight
-CasaOS Installation
-Option 1: Docker Compose (Recommended)
-Open CasaOS
-Go to App Store → Custom Install
-Upload the docker-compose.yml file
-Fill in environment variables
-Click Install
-Option 2: Manual Docker Command
-bash
+### Step 3: Complete Setup in Your Browser
+
+1. **Open the app**: Visit `http://localhost:8001`
+2. **Enter Teller credentials**:
+   - Paste your Application ID
+   - Upload your `certificate.pem` file
+   - Upload your `private_key.pem` file
+3. **Connect your bank**: Authenticate with your bank through Teller Connect
+4. **Configure Actual Budget**: Enter your Actual Budget server details
+5. **Done!** The sync will start automatically
+
+That's it! The guided wizard handles everything - no manual token copying or config file editing.
+
+---
+
+## 📚 Detailed Setup Guide
+
+### Getting Teller API Credentials
+
+#### Application ID (Required for all modes)
+
+1. Visit [Teller Dashboard](https://teller.io/dashboard)
+2. Create a new application or select existing
+3. Copy your **Application ID** (starts with `app_`)
+4. You'll enter this during the setup wizard
+
+#### mTLS Certificates (Required for Development & Production)
+
+Teller requires client certificates for API authentication. The setup wizard will guide you through uploading these.
+
+**To download your certificates:**
+
+1. Visit [Teller Dashboard - Certificates](https://teller.io/dashboard/certificates)
+2. Download **Certificate** (`certificate.pem`)
+3. Download **Private Key** (`private_key.pem`)
+4. Keep these files secure - you'll upload them during setup
+
+**Certificate Requirements by Environment:**
+- **Sandbox**: No certificates needed (test mode only)
+- **Development**: Certificates required (connects to real banks in test mode)
+- **Production**: Certificates required (connects to real banks in live mode)
+
+**Note**: The default environment is `development`, so certificates are required for initial setup.
+
+[Learn more about Teller authentication](https://teller.io/docs/api/authentication)
+
+### Finding Your Actual Budget IDs
+
+#### Sync ID
+1. Open Actual Budget
+2. Go to **Settings** (gear icon)
+3. Click **"Show Advanced Settings"**
+4. Copy the **Sync ID**
+
+#### Account ID
+1. Open the account you want to sync in Actual Budget
+2. Look at the browser URL bar
+3. Copy the ID after `/accounts/`
+   - Example: `https://actual.yourdomain.com/accounts/abc123-def456-ghi789`
+   - Your Account ID is: `abc123-def456-ghi789`
+
+---
+
+## 🐳 Docker Deployment
+
+### Using Docker Compose (Recommended)
+
+Create `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  teller-actual-sync:
+    image: YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest
+    # Or build locally:
+    # build: .
+    container_name: teller-actual-sync
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - TZ=${TZ:-America/New_York}
+      - PORT=8001
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./transaction-data:/app/transaction-data
+      - ./actual-data:/app/actual-data
+      - ./certs:/app/certs
+```
+
+Create `.env` (optional - for timezone only):
+
+```bash
+TZ=America/New_York
+```
+
+Start:
+
+```bash
+docker-compose up -d
+```
+
+**Note**: You no longer need to set `APP_ID` in `.env`! The guided setup wizard will handle all configuration including:
+- Teller Application ID
+- mTLS certificate upload
+- Bank connection via Teller Connect
+- Actual Budget configuration
+
+### Using Docker Run
+
+```bash
 docker run -d \
   --name teller-actual-sync \
   --restart unless-stopped \
@@ -89,63 +172,427 @@ docker run -d \
   -v $(pwd)/logs:/app/logs \
   -v $(pwd)/transaction-data:/app/transaction-data \
   -v $(pwd)/actual-data:/app/actual-data \
-  -e APP_ID=your_app_id \
-  -e TELLER_ACCESS_TOKEN=your_token \
-  -e TELLER_ACCOUNT_ID=your_account_id \
-  -e ACTUAL_SERVER_URL=http://your-actual:5006 \
-  -e ACTUAL_PASSWORD=your_password \
-  -e ACTUAL_SYNC_ID=your_sync_id \
-  -e ACTUAL_ACCOUNT_ID=your_actual_account_id \
-  teller-actual-sync
-API Endpoints
-GET / - Teller Connect web interface
-POST /manual-sync - Trigger manual sync
-GET /sync-logs - View recent sync logs (last 50)
-GET /ping - Health check
-Troubleshooting
-Sync not running
-bash
-# Check if container is running
-docker ps
+  -v $(pwd)/certs:/app/certs \
+  -e TZ=America/New_York \
+  YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest
+```
 
-# Check logs for errors
+Then visit `http://localhost:8001` to complete setup through the guided wizard.
+
+---
+
+## 🔧 Configuration
+
+### Configuration Methods
+
+The app supports two configuration methods (in priority order):
+
+1. **`config/config.json`** (recommended) - Created automatically by the setup wizard
+2. **Environment variables** - Fallback if config.json doesn't exist
+
+### Complete Environment Variables Reference
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| **Teller Settings** |
+| `APP_ID` | Teller Application ID | - | ✅ |
+| `ENV` | Environment: `sandbox`, `development`, or `production` | `sandbox` | ❌ |
+| `TELLER_ACCESS_TOKEN` | Teller OAuth access token (auto-set by wizard) | - | ✅* |
+| `TELLER_ACCOUNT_ID` | Bank account ID to sync (auto-set by wizard) | - | ✅* |
+| `CERT` | Path to mTLS certificate (required for prod) | - | ❌ |
+| `CERT_KEY` | Path to mTLS private key (required for prod) | - | ❌ |
+| **Actual Budget Settings** |
+| `ACTUAL_SERVER_URL` | Actual Budget server URL | - | ✅* |
+| `ACTUAL_PASSWORD` | Server password | - | ✅* |
+| `ACTUAL_SYNC_ID` | Budget file sync ID | - | ✅* |
+| `ACTUAL_ACCOUNT_ID` | Account ID within budget | - | ✅* |
+| `ACTUAL_DATA_DIR` | Data directory for Actual cache | `/app/actual-data` | ❌ |
+| **Sync Settings** |
+| `DAYS_TO_SYNC` | Days of transactions to fetch | `7` | ❌ |
+| `CRON_SCHEDULE` | Cron expression for auto-sync | `0 2 * * *` | ❌ |
+| `TZ` | Timezone | `America/New_York` | ❌ |
+| `PORT` | Server port | `8001` | ❌ |
+
+_*Required, but automatically configured by the setup wizard_
+
+### Cron Schedule Examples
+
+- `0 2 * * *` - Daily at 2 AM (default)
+- `0 */6 * * *` - Every 6 hours
+- `0 8,20 * * *` - Twice daily (8 AM and 8 PM)
+- `*/30 * * * *` - Every 30 minutes
+- `0 0 * * 1` - Weekly on Monday at midnight
+
+[Test your cron expression](https://crontab.guru/)
+
+---
+
+## 📊 Admin Dashboard
+
+Access the admin dashboard at `http://localhost:8001/admin`
+
+### Dashboard Features
+
+- **Setup Status**: See if Teller and Actual Budget are connected
+- **Sync Status**: View last sync time, status, and transaction count
+- **Manual Sync**: Trigger immediate sync
+- **Configuration**: Edit all settings without restarting
+- **Sync Logs**: View detailed sync history
+- **Connection Testing**: Test Teller and Actual Budget connections
+
+---
+
+## 🔌 API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/` | Smart redirect to setup or admin |
+| `GET` | `/connect` | Teller setup (APP_ID + certs or Connect) |
+| `GET` | `/setup` | Actual Budget setup wizard |
+| `GET` | `/admin` | Admin dashboard |
+| `POST` | `/manual-sync` | Trigger immediate sync |
+| `GET` | `/sync-logs` | Get last 50 sync logs (JSON) |
+| `GET` | `/ping` | Health check |
+| `GET` | `/api/config/status` | Check configuration completeness |
+| `POST` | `/api/setup/save-app-id-and-certs` | Save APP_ID and upload certificates |
+| `POST` | `/api/setup/save-teller` | Save Teller credentials (auto-called) |
+| `POST` | `/api/setup/save-actual` | Save Actual Budget config |
+| `POST` | `/api/test/teller` | Test Teller API connection |
+| `POST` | `/api/test/actual` | Test Actual Budget connection |
+| `POST` | `/admin/api/certificates/upload` | Upload certificates from admin panel |
+| `GET` | `/admin/api/certificates/status` | Check certificate upload status |
+
+### Example: Trigger Manual Sync
+
+```bash
+curl -X POST http://localhost:8001/manual-sync
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Sync completed successfully"
+}
+```
+
+---
+
+## 🏠 CasaOS Installation
+
+### Method 1: Docker Compose (Recommended)
+
+1. Open **CasaOS**
+2. Go to **App Store** → **Custom Install**
+3. Select **Docker Compose**
+4. Paste the `docker-compose.yml` content
+5. Set `APP_ID` environment variable
+6. Click **Install**
+7. Access via **My Apps** or visit `http://your-casaos-ip:8001`
+
+### Method 2: Import from Docker Hub
+
+1. Open **CasaOS App Store**
+2. Click **Custom Install**
+3. Select **Docker Image**
+4. Enter: `YOUR_DOCKERHUB_USERNAME/teller-actual-sync:latest`
+5. Configure:
+   - Port: `8001`
+   - Volumes: Add the 5 volumes listed in docker-compose
+   - Environment: Add `APP_ID`
+6. Click **Install**
+
+---
+
+## 🔍 Troubleshooting
+
+### Container won't start
+
+```bash
+# Check logs
 docker-compose logs -f
 
-# Verify cron schedule
-docker-compose exec teller-actual-sync cat /etc/crontabs/root
-Transactions not importing
-Verify Teller access token is valid
-Check Actual Budget server is accessible from container
-Confirm ACTUAL_ACCOUNT_ID matches the account in Actual Budget
-Review sync logs: curl http://localhost:8001/sync-logs
-Connection errors
-bash
-# Test Actual Budget connection
-docker-compose exec teller-actual-sync wget -O- http://your-actual-server:5006
+# Common issues:
+# - Port 8001 already in use
+# - Volume permission issues
+```
 
-# Test Teller API
-docker-compose exec teller-actual-sync wget -O- --header="Authorization: Bearer your_token" https://api.teller.io/accounts
-File Structure
-.
-├── teller.js              # Main server with cron
+### Setup wizard shows "Configuration incomplete"
+
+1. Clear browser cache
+2. Delete `config/config.json` and restart:
+   ```bash
+   rm config/config.json
+   docker-compose restart
+   ```
+3. Visit `http://localhost:8001` and complete setup again
+
+### Certificate upload fails on /connect page
+
+**Common issues:**
+- Wrong file format - must be `.pem` files
+- Files too large - should be under 10MB
+- Corrupted certificate files - re-download from Teller Dashboard
+
+**To verify certificates are uploaded:**
+1. Check `certs/` directory for `certificate.pem` and `private_key.pem`
+2. Check `config/config.json` contains `certPath` and `certKeyPath`
+
+### Teller connection fails with "Missing certificate" error
+
+This means certificates weren't properly uploaded or aren't being loaded:
+
+1. **Re-upload certificates**: Visit `/connect` and upload both files again
+2. **Check certificate location**:
+   ```bash
+   ls -la certs/
+   # Should show: certificate.pem and private_key.pem
+   ```
+3. **Restart container** to reload certificates:
+   ```bash
+   docker-compose restart
+   ```
+4. **Verify config**:
+   ```bash
+   cat config/config.json
+   # Should have "certPath" and "certKeyPath" fields
+   ```
+
+### Actual Budget connection fails
+
+1. Verify server URL is accessible from the container
+2. Check firewall rules
+3. Test connection from container:
+   ```bash
+   docker-compose exec teller-actual-sync wget -O- http://your-actual-server:5006
+   ```
+4. Verify password is correct
+5. Confirm Sync ID and Account ID are correct UUIDs
+
+### Transactions not syncing
+
+1. Check sync logs in admin dashboard
+2. Verify account IDs match:
+   - Teller Account ID (from bank connection)
+   - Actual Budget Account ID (from URL)
+3. Check `DAYS_TO_SYNC` setting (default: 7 days)
+4. Trigger manual sync and watch for errors
+
+### View detailed logs
+
+```bash
+# Container logs
+docker-compose logs -f teller-actual-sync
+
+# Sync logs (JSON format)
+cat logs/sync.log
+
+# Via API
+curl http://localhost:8001/sync-logs | jq
+```
+
+---
+
+## 📁 File Structure
+
+```
+teller-actual-sync/
+├── teller.js              # Main Express server with routing
 ├── sync.js                # Standalone sync script
 ├── Dockerfile             # Container definition
-├── docker-compose.yml     # Docker Compose config
-├── package.json           # Node dependencies
+├── docker-compose.yml     # Docker Compose configuration
+├── package.json           # Node.js dependencies
 ├── .env                   # Your configuration (create this)
-├── config/                # Volume: persistent config
-├── logs/                  # Volume: sync logs
-├── transaction-data/      # Volume: transaction backups
-└── actual-data/           # Volume: Actual Budget cache
-Next Steps (Phase 2)
-🎨 Admin UI for configuration management
-📊 Sync status dashboard
-🔔 Email/webhook notifications
-🏦 Multi-account support
-📝 Transaction categorization rules
-Contributing
-This project is designed for the Actual Budget homelab community. Contributions welcome!
+├── .env.example           # Example environment variables
+├── static/                # Web UI files
+│   ├── connect.html       # Teller Connect UI
+│   ├── connect.js         # Teller Connect logic
+│   ├── connect.css        # Teller Connect styles
+│   ├── setup.html         # Actual Budget setup wizard
+│   ├── setup.js           # Setup wizard logic
+│   ├── setup.css          # Setup wizard styles
+│   ├── admin.html         # Admin dashboard
+│   └── admin.js           # Admin dashboard logic
+├── config/                # 📂 Volume: Persistent configuration
+│   └── config.json        # Auto-generated by setup wizard
+├── logs/                  # 📂 Volume: Sync logs
+│   └── sync.log           # JSON-formatted sync history
+├── transaction-data/      # 📂 Volume: Transaction backups
+│   └── transactions_*.json
+├── actual-data/           # 📂 Volume: Actual Budget cache
+└── certs/                 # 📂 Volume: mTLS certificates (production)
+    ├── certificate.pem
+    └── private_key.pem
+```
 
-License
+---
+
+## 🛠️ How It Works
+
+### Architecture Overview
+
+```
+┌──────────────┐         ┌──────────────────┐         ┌────────────────┐
+│              │  OAuth  │                  │  Sync   │                │
+│  Your Bank   │◄────────│  Teller API      │◄────────│  This App      │
+│              │         │                  │         │                │
+└──────────────┘         └──────────────────┘         └────────────────┘
+                                                              │
+                                                              │ Import
+                                                              ▼
+                                                       ┌────────────────┐
+                                                       │                │
+                                                       │ Actual Budget  │
+                                                       │                │
+                                                       └────────────────┘
+```
+
+### Sync Process
+
+1. **Scheduled Trigger**: Cron job runs at configured time (default: 2 AM)
+2. **Fetch from Teller**: Retrieves last N days of transactions (default: 7)
+3. **Transform Data**: Converts Teller format to Actual Budget format
+4. **Import to Actual**: Uses Actual Budget API to import transactions
+5. **Logging**: Records sync results (added, updated, skipped)
+6. **Backup**: Saves transaction data to `transaction-data/` directory
+
+### Data Flow
+
+```
+Teller Transaction Format:
+{
+  "amount": "-12.50",
+  "date": "2025-01-20",
+  "description": "Coffee Shop",
+  "status": "posted",
+  "details": {
+    "counterparty": {
+      "name": "Starbucks"
+    }
+  }
+}
+
+↓ Transform ↓
+
+Actual Budget Format:
+{
+  "amount": -1250,  // cents
+  "date": "2025-01-20",
+  "payee_name": "Starbucks",
+  "notes": "Imported from Teller",
+  "cleared": true
+}
+```
+
+---
+
+## 🔐 Security Best Practices
+
+1. **Use HTTPS**: If exposing outside your network, use a reverse proxy with SSL
+2. **Network Isolation**: Keep on internal network, don't expose to internet
+3. **Certificates**: Store mTLS certificates securely, never commit to git
+4. **Passwords**: Use strong passwords for Actual Budget
+5. **Backups**: Regularly backup your `config/` directory
+6. **Updates**: Keep the Docker image updated
+
+### Recommended Docker Compose Security
+
+```yaml
+services:
+  teller-actual-sync:
+    # ... other config ...
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+```
+
+---
+
+## 🎯 Use Cases
+
+- **Homelab Enthusiasts**: Perfect for self-hosted budget management
+- **Privacy-Focused Users**: All data stays on your infrastructure
+- **Budget Automation**: Set it and forget it transaction imports
+- **Multiple Accounts**: Configure multiple instances for different banks
+- **Development**: Use sandbox mode to test Actual Budget integrations
+
+---
+
+## 🚧 Roadmap
+
+### Completed ✅
+- ✅ Automated Teller token capture
+- ✅ Guided setup wizard
+- ✅ Admin dashboard
+- ✅ Connection testing
+- ✅ Config file management
+- ✅ Docker Hub publishing
+
+### Planned 🔜
+- 🔜 Multi-account support (sync multiple banks)
+- 🔜 Email/webhook notifications for sync failures
+- 🔜 Transaction categorization rules
+- 🔜 Custom field mapping
+- 🔜 Sync frequency per account
+- 🔜 Web-based log viewer with filtering
+- 🔜 Prometheus metrics endpoint
+- 🔜 Account balance reconciliation
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! This project is designed for the Actual Budget homelab community.
+
+### Development Setup
+
+```bash
+# Clone repository
+git clone YOUR_REPO_URL
+cd teller-actual-sync
+
+# Install dependencies
+npm install
+
+# Run locally (requires .env or config.json)
+node teller.js
+
+# Build Docker image
+docker build -t teller-actual-sync:dev .
+```
+
+### Submitting Changes
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+---
+
+## 📄 License
+
 MIT License - Feel free to use and modify for personal use.
 
+---
+
+## 🙏 Acknowledgments
+
+- **[Teller](https://teller.io)** - Banking API platform
+- **[Actual Budget](https://actualbudget.com)** - Open-source budgeting software
+- **CasaOS Community** - For homelab inspiration
+
+---
+
+## 📞 Support
+
+- **Issues**: [GitHub Issues](YOUR_REPO_URL/issues)
+- **Discussions**: [GitHub Discussions](YOUR_REPO_URL/discussions)
+- **Actual Budget Discord**: Join for community support
+
+---
+
+**Made with ❤️ for the self-hosted community**

@@ -431,13 +431,84 @@ document.addEventListener('DOMContentLoaded', function(){
     applicationId: APPLICATION_ID,
     environment: ENVIRONMENT,
     selectAccount: 'multiple',
-    onSuccess: e => {
+    onSuccess: async e => {
       document.getElementById('console-container').classList.remove('hidden');
       store.putUser(e.user);
       store.putEnrollment(e);
       enrollmentHandler.onEnrollment(e);
       userHandler.onEnrollment(e);
       statusHandler.onEnrollment(e);
+
+      // Auto-save Teller credentials to backend
+      try {
+        console.log('🔍 Enrollment data received:', e);
+
+        // Fetch the accounts using the access token to get the account IDs
+        let accountId = null;
+
+        try {
+          console.log('📡 Fetching accounts from Teller API...');
+          const accountsResponse = await fetch(`${BASE_URL}/accounts`, {
+            headers: {
+              'Authorization': e.accessToken
+            }
+          });
+
+          const accounts = await accountsResponse.json();
+          console.log('📋 Accounts received:', accounts);
+
+          // Get the first account
+          if (accounts && accounts.length > 0) {
+            accountId = accounts[0].id;
+            console.log('✅ Account ID extracted:', accountId);
+          }
+        } catch (fetchError) {
+          console.error('❌ Error fetching accounts:', fetchError);
+        }
+
+        console.log('📋 Extracted data:', {
+          accessToken: e.accessToken ? `${e.accessToken.substring(0, 10)}...` : 'missing',
+          accountId: accountId || 'missing',
+          userId: e.user?.id || 'missing'
+        });
+
+        if (!accountId) {
+          console.error('❌ No account ID found');
+          alert('Could not find account ID. Please try again or configure manually.');
+          return;
+        }
+
+        console.log('📤 Sending request to /api/setup/save-teller...');
+        const response = await fetch(`${BASE_URL2}/api/setup/save-teller`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accessToken: e.accessToken,
+            accountId: accountId,
+            userId: e.user.id
+          })
+        });
+
+        console.log('📥 Response status:', response.status);
+        const result = await response.json();
+        console.log('📥 Response data:', result);
+
+        if (result.success) {
+          console.log('✅ Teller credentials saved successfully');
+          // Show success message and redirect after a brief delay
+          setTimeout(() => {
+            alert('Bank account connected successfully! Redirecting to setup wizard...');
+            window.location.href = result.redirectTo || '/setup';
+          }, 1000);
+        } else {
+          console.error('❌ Failed to save credentials:', result.error);
+          alert('Connected to bank, but failed to save credentials. Please try again or configure manually.');
+        }
+      } catch (error) {
+        console.error('❌ Error auto-saving Teller credentials:', error);
+        console.error('Error details:', error.stack);
+        alert('Connected to bank, but failed to save credentials. You can configure manually in the admin panel.');
+      }
     }
   });
 
@@ -452,6 +523,61 @@ document.addEventListener('DOMContentLoaded', function(){
     enrollmentHandler.onEnrollment(e);
     userHandler.onEnrollment(e);
     statusHandler.onEnrollment(e);
+
+    // Auto-save if user is already connected and hasn't saved yet
+    (async () => {
+      try {
+        console.log('🔄 User already connected, checking if credentials need to be saved...');
+
+        // Fetch the accounts using the access token
+        const accountsResponse = await fetch(`${BASE_URL}/accounts`, {
+          headers: {
+            'Authorization': e.accessToken
+          }
+        });
+
+        const accounts = await accountsResponse.json();
+        console.log('📋 Accounts from existing connection:', accounts);
+
+        if (accounts && accounts.length > 0) {
+          const accountId = accounts[0].id;
+
+          console.log('📤 Checking current config status...');
+          const statusResponse = await fetch(`${BASE_URL2}/api/config/status`);
+          const configStatus = await statusResponse.json();
+
+          // Only auto-save if Teller config is not already complete
+          if (!configStatus.hasTellerConfig) {
+            console.log('💾 Auto-saving existing Teller connection...');
+
+            const saveResponse = await fetch(`${BASE_URL2}/api/setup/save-teller`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                accessToken: e.accessToken,
+                accountId: accountId,
+                userId: e.user.id
+              })
+            });
+
+            const result = await saveResponse.json();
+
+            if (result.success) {
+              console.log('✅ Existing connection saved successfully');
+              setTimeout(() => {
+                alert('Existing bank connection found! Redirecting to setup wizard...');
+                window.location.href = result.redirectTo || '/setup';
+              }, 1000);
+            }
+          } else {
+            console.log('ℹ️ Teller already configured, skipping auto-save');
+          }
+        }
+      } catch (error) {
+        console.error('⚠️ Error checking existing connection:', error);
+        // Don't show alert for this, just log it
+      }
+    })();
   }
 
   /* ---------- Console Drawer: persistent resizer, minimize (log-only), restore, clear hotkey ---------- */

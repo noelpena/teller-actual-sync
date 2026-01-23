@@ -5,3 +5,9 @@ config.json
 /certs/*
 /actual-data/*
 .env
+.env.*
+/certs/*.pem
+/config/config.json
+/actual-data/
+/logs/
+/transaction-data/

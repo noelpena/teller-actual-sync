@@ -1,7 +1,11 @@
 {
   "teller": {
+    "appId": "your_teller_app_id_here",
     "accessToken": "your_teller_access_token_here",
-    "accountId": "your_teller_account_id_here"
+    "accountId": "your_teller_account_id_here",
+    "environment": "development",
+    "certPath": "",
+    "certKeyPath": ""
   },
   "actual": {
     "dataDir": "/app/actual-data",
