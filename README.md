@@ -53,7 +53,7 @@ docker-compose up -d
 
 ### Step 3: Complete Setup in Your Browser
 
-1. **Open the app**: Visit `http://localhost:8001`
+1. **Open the app**: Visit `http://<your-server-ip>:8001`
 2. **Enter Teller credentials**:
    - Paste your Application ID
    - Upload your `certificate.pem` file
@@ -129,12 +129,11 @@ services:
     # Or build locally:
     # build: .
     container_name: teller-actual-sync
-    restart: unless-stopped
+    restart: always
     ports:
       - "8001:8001"
     environment:
       - TZ=${TZ:-America/New_York}
-      - PORT=8001
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs
@@ -143,30 +142,26 @@ services:
       - ./certs:/app/certs
 ```
 
-Create `.env` (optional - for timezone only):
-
-```bash
-TZ=America/New_York
-```
-
 Start:
 
 ```bash
 docker-compose up -d
 ```
 
-**Note**: You no longer need to set `APP_ID` in `.env`! You can if you want still add the env variables in the docker compose file, however, the guided setup wizard will handle all configuration including:
-- Teller Application ID
-- mTLS certificate upload
+**Note**: No manual configuration is needed! The guided setup wizard handles everything:
+- Teller Application ID and mTLS certificate upload
 - Bank connection via Teller Connect
 - Actual Budget configuration
+- Sync schedule settings
+
+All settings are saved to `config/config.json` automatically.
 
 ### Using Docker Run
 
 ```bash
 docker run -d \
   --name teller-actual-sync \
-  --restart unless-stopped \
+  --restart always \
   -p 8001:8001 \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/logs:/app/logs \
@@ -177,47 +172,55 @@ docker run -d \
   noelpena/teller-actual-sync:latest
 ```
 
-Then visit `http://localhost:8001` to complete setup through the guided wizard.
+Then visit `http://<your-server-ip>:8001` to complete setup through the guided wizard.
 
 ---
 
 ## 🔧 Configuration
 
-### Configuration Methods
+### How Configuration Works
 
-The app supports two configuration methods (in priority order):
+All configuration is stored in **`config/config.json`**, which is created and managed automatically by the setup wizard. You should not need to edit this file manually.
 
-1. **`config/config.json`** (recommended) - Created automatically by the setup wizard
-2. **Environment variables** - Fallback if config.json doesn't exist
+Example `config.json` structure:
 
-### Complete Environment Variables Reference
+```json
+{
+  "teller": {
+    "appId": "app_xxxxxxxxxxxxx",
+    "accessToken": "token_xxxxxxxxxxxxx",
+    "accountId": "acc_xxxxxxxxxxxxx",
+    "env": "development",
+    "certPath": "/app/certs/certificate.pem",
+    "certKeyPath": "/app/certs/private_key.pem"
+  },
+  "actual": {
+    "dataDir": "/app/actual-data",
+    "serverURL": "http://your-actual-server:5006",
+    "password": "your_password",
+    "syncId": "your-budget-sync-id",
+    "accountId": "your-account-id"
+  },
+  "sync": {
+    "daysToSync": 7,
+    "cronSchedule": "0 8 * * *"
+  }
+}
+```
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| **Teller Settings** |
-| `APP_ID` | Teller Application ID | - | ✅ |
-| `ENV` | Environment: `development`, or `production` | `development` | ❌ |
-| `TELLER_ACCESS_TOKEN` | Teller OAuth access token (auto-set by wizard) | - | ✅* |
-| `TELLER_ACCOUNT_ID` | Bank account ID to sync (auto-set by wizard) | - | ✅* |
-| `CERT` | Path to mTLS certificate (required for prod) | - | ✅* |
-| `CERT_KEY` | Path to mTLS private key (required for prod) | - | ✅* |
-| **Actual Budget Settings** |
-| `ACTUAL_SERVER_URL` | Actual Budget server URL | - | ✅* |
-| `ACTUAL_PASSWORD` | Server password | - | ✅* |
-| `ACTUAL_SYNC_ID` | Budget file sync ID | - | ✅* |
-| `ACTUAL_ACCOUNT_ID` | Account ID within budget | - | ✅* |
-| `ACTUAL_DATA_DIR` | Data directory for Actual cache | `/app/actual-data` | ❌ |
-| **Sync Settings** |
-| `DAYS_TO_SYNC` | Days of transactions to fetch | `7` | ❌ |
-| `CRON_SCHEDULE` | Cron expression for auto-sync | `0 8 * * *` | ❌ |
-| `TZ` | Timezone | `America/New_York` | ❌ |
-| `PORT` | Server port | `8001` | ❌ |
+### Docker Compose Environment Variables
 
-_*Required, but automatically configured by the setup wizard_
+The only environment variable you may want to set in `docker-compose.yml` is your timezone:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TZ` | Timezone for cron scheduling | `America/New_York` |
+
+All other settings (Teller credentials, Actual Budget config, sync schedule) are managed through `config/config.json` via the setup wizard or admin dashboard.
 
 ### Cron Schedule Examples
 
-- `0 2 * * *` - Daily at 2 AM (default)
+- `0 8 * * *` - Daily at 8 AM (default)
 - `0 */6 * * *` - Every 6 hours
 - `0 8,20 * * *` - Twice daily (8 AM and 8 PM)
 - `*/30 * * * *` - Every 30 minutes
@@ -229,7 +232,7 @@ _*Required, but automatically configured by the setup wizard_
 
 ## 📊 Admin Dashboard
 
-Access the admin dashboard at `http://localhost:8001/admin`
+Access the admin dashboard at `http://<your-server-ip>:8001/admin`
 
 ### Dashboard Features
 
@@ -400,8 +403,6 @@ teller-actual-sync/
 ├── Dockerfile             # Container definition
 ├── docker-compose.yml     # Docker Compose configuration
 ├── package.json           # Node.js dependencies
-├── .env                   # Optional: Your configuration (create this)
-├── .env.example           # Example environment variables
 ├── static/                # Web UI files
 │   ├── connect.html       # Teller Connect UI
 │   ├── connect.js         # Teller Connect logic
@@ -447,7 +448,7 @@ teller-actual-sync/
 
 ### Sync Process
 
-1. **Scheduled Trigger**: Cron job runs at configured time (default: 8 AM)
+1. **Scheduled Trigger**: Cron job runs at configured time (default: daily at 8 AM)
 2. **Fetch from Teller**: Retrieves last N days of transactions (default: 7)
 3. **Transform Data**: Converts Teller format to Actual Budget format
 4. **Import to Actual**: Uses Actual Budget API to import transactions
