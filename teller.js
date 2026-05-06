@@ -306,10 +306,13 @@ app.get("/api/mappings", (req, res) => {
         : null,
       disabled: !!m.disabled,
       needsReconnect: !!m.needsReconnect,
+      pendingReconcile: !!m.pendingReconcile,
       lastSyncAt: m.lastSyncAt || null,
       lastSyncStatus: m.lastSyncStatus || null,
       lastSyncStats: m.lastSyncStats || null,
       lastError: m.lastError || null,
+      lastReconcileAt: m.lastReconcileAt || null,
+      lastReconcileDelta: m.lastReconcileDelta == null ? null : m.lastReconcileDelta,
     }));
     res.json({ mappings: safe });
   } catch (error) {
@@ -346,6 +349,20 @@ app.patch("/api/mappings/:id", (req, res) => {
   } catch (error) {
     console.error("Error patching mapping:", error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Trigger reconcile on next sync (and immediately run it)
+app.post("/api/mappings/:id/reconcile", async (req, res) => {
+  try {
+    updateMappingState(req.params.id, { pendingReconcile: true });
+    const stats = await runSyncForMapping(req.params.id);
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error?.message || String(error),
+    });
   }
 });
 
@@ -401,7 +418,7 @@ app.post("/api/mappings/rotate-token", (req, res) => {
 // Otherwise create a new one.
 app.post("/api/mappings", (req, res) => {
   try {
-    const { id, name, tellerAccessToken, tellerAccountId, actualAccountId } = req.body;
+    const { id, name, tellerAccessToken, tellerAccountId, actualAccountId, pendingReconcile } = req.body;
 
     if (!tellerAccessToken || !tellerAccountId || !actualAccountId) {
       return res.status(400).json({
@@ -431,6 +448,7 @@ app.post("/api/mappings", (req, res) => {
         tellerAccessToken,
         tellerAccountId,
         actualAccountId,
+        ...(typeof pendingReconcile === "boolean" ? { pendingReconcile } : {}),
       };
     } else {
       // Prevent duplicate (same tellerAccountId + actualAccountId)
@@ -446,6 +464,7 @@ app.post("/api/mappings", (req, res) => {
         tellerAccessToken,
         tellerAccountId,
         actualAccountId,
+        pendingReconcile: !!pendingReconcile,
       });
     }
 

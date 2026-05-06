@@ -452,12 +452,16 @@ document.getElementById('testActualBtn').addEventListener('click', testActualCon
 // ===== Account Mappings =====
 
 function statusBadge(m) {
-  if (m.disabled) return '<span class="px-2 py-0.5 text-xs rounded bg-gray-200 text-gray-700">Disabled</span>';
-  if (m.needsReconnect) return '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Needs reconnect</span>';
-  if (m.lastSyncStatus === 'success') return '<span class="px-2 py-0.5 text-xs rounded bg-green-100 text-green-800">OK</span>';
-  if (m.lastSyncStatus === 'error') return '<span class="px-2 py-0.5 text-xs rounded bg-red-100 text-red-800">Error</span>';
-  if (m.lastSyncStatus === 'auth_error') return '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Auth error</span>';
-  return '<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">Never synced</span>';
+  const badges = [];
+  if (m.disabled) badges.push('<span class="px-2 py-0.5 text-xs rounded bg-gray-200 text-gray-700">Disabled</span>');
+  else if (m.needsReconnect) badges.push('<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Needs reconnect</span>');
+  else if (m.lastSyncStatus === 'success') badges.push('<span class="px-2 py-0.5 text-xs rounded bg-green-100 text-green-800">OK</span>');
+  else if (m.lastSyncStatus === 'error') badges.push('<span class="px-2 py-0.5 text-xs rounded bg-red-100 text-red-800">Error</span>');
+  else if (m.lastSyncStatus === 'auth_error') badges.push('<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Auth error</span>');
+  else badges.push('<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">Never synced</span>');
+
+  if (m.pendingReconcile) badges.push('<span class="px-2 py-0.5 text-xs rounded bg-purple-100 text-purple-800">Reconcile pending</span>');
+  return badges.join(' ');
 }
 
 function relativeTime(iso) {
@@ -511,6 +515,7 @@ async function loadMappings() {
             </div>
             <div class="flex flex-col gap-1 shrink-0">
               <button data-id="${m.id}" class="sync-mapping px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Sync</button>
+              <button data-id="${m.id}" class="reconcile-mapping px-3 py-1 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200">Reconcile</button>
               <button data-id="${m.id}" class="edit-mapping px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Edit</button>
               <button data-id="${m.id}" data-disabled="${m.disabled ? '1' : '0'}" class="toggle-mapping px-3 py-1 text-xs ${m.disabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'} rounded">${m.disabled ? 'Enable' : 'Disable'}</button>
               <button data-id="${m.id}" class="delete-mapping px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">Delete</button>
@@ -525,6 +530,9 @@ async function loadMappings() {
     });
     container.querySelectorAll('.sync-mapping').forEach(btn => {
       btn.addEventListener('click', () => syncSingleMapping(btn.dataset.id, btn));
+    });
+    container.querySelectorAll('.reconcile-mapping').forEach(btn => {
+      btn.addEventListener('click', () => reconcileSingleMapping(btn.dataset.id, btn));
     });
     container.querySelectorAll('.toggle-mapping').forEach(btn => {
       btn.addEventListener('click', () => toggleMapping(btn.dataset.id, btn.dataset.disabled === '1'));
@@ -563,6 +571,29 @@ async function syncSingleMapping(id, btn) {
     showToast(`Sync OK: ${data.stats.added} added, ${data.stats.updated} updated`, 'success');
   } catch (error) {
     showToast(`Sync failed: ${error.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    loadMappings();
+  }
+}
+
+async function reconcileSingleMapping(id, btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch(`/api/mappings/${id}/reconcile`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Reconcile failed');
+    const r = data.stats?.reconcile;
+    if (r && r.delta != null) {
+      showToast(`Reconciled: Δ ${(r.delta / 100).toFixed(2)} (Teller ${r.tellerBalance.toFixed(2)})`, 'success');
+    } else {
+      showToast('Reconcile completed (already balanced or no delta)', 'success');
+    }
+  } catch (error) {
+    showToast(`Reconcile failed: ${error.message}`, 'error');
   } finally {
     btn.disabled = false;
     btn.textContent = original;
@@ -936,10 +967,13 @@ async function handleSaveNewBankMappings() {
       }
     }
 
-    // 2. For each plan: ensure we have an Actual account ID, then create the mapping
+    // 2. For each plan: ensure we have an Actual account ID, then create the mapping.
+    //    For newly-created accounts, mark pendingReconcile so the next sync auto-balances
+    //    against Teller's reported balance.
     for (const p of plans) {
       try {
         let actualAccountId = p.actualAccountId;
+        let needsReconcile = false;
         if (p.mode === 'create') {
           const aRes = await fetch('/api/actual/accounts', {
             method: 'POST',
@@ -950,6 +984,7 @@ async function handleSaveNewBankMappings() {
           if (!aRes.ok || !aData.id) throw new Error(aData.error || 'Actual account creation failed');
           actualAccountId = aData.id;
           accountsCreated++;
+          needsReconcile = true;
         }
 
         const mRes = await fetch('/api/mappings', {
@@ -960,6 +995,7 @@ async function handleSaveNewBankMappings() {
             tellerAccountId: p.tellerAccountId,
             actualAccountId,
             tellerAccessToken: _newBankToken,
+            pendingReconcile: needsReconcile,
           }),
         });
         const mData = await mRes.json();

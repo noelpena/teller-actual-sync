@@ -96,11 +96,14 @@ function saveMappings(mappings) {
     actualAccountId: m.actualAccountId,
     disabled: !!m.disabled,
     needsReconnect: !!m.needsReconnect,
+    pendingReconcile: !!m.pendingReconcile,
     // Sync state — preserved across saves
     lastSyncAt: m.lastSyncAt || null,
     lastSyncStatus: m.lastSyncStatus || null,    // 'success' | 'error' | 'auth_error' | 'skipped'
     lastSyncStats: m.lastSyncStats || null,
     lastError: m.lastError || null,
+    lastReconcileAt: m.lastReconcileAt || null,
+    lastReconcileDelta: m.lastReconcileDelta == null ? null : m.lastReconcileDelta,
   }));
 
   const next = { ...existing, mappings: cleaned };
@@ -162,6 +165,50 @@ class TellerAuthError extends Error {
     this.name = "TellerAuthError";
     this.statusCode = statusCode;
   }
+}
+
+// Fetch the ledger balance from Teller for a single mapping. Returns a Number (in dollars) or null.
+function fetchTellerBalance({ mapping, tellerConfig }) {
+  const agent = buildTellerAgent(tellerConfig);
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: "api.teller.io",
+      path: `/accounts/${mapping.tellerAccountId}/balances`,
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${mapping.tellerAccessToken}:`).toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+      agent,
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        if (res.statusCode === 401 || res.statusCode === 403) {
+          return reject(new TellerAuthError(
+            `Teller balance auth error ${res.statusCode}`, res.statusCode
+          ));
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          return reject(new Error(`Teller balance API ${res.statusCode}: ${data}`));
+        }
+        try {
+          const parsed = JSON.parse(data);
+          // Teller returns ledger as a string. Prefer ledger (posted) over available (post-pending).
+          const v = parseFloat(parsed.ledger ?? parsed.available);
+          resolve(Number.isFinite(v) ? v : null);
+        } catch (err) {
+          reject(new Error(`Failed to parse Teller balance response: ${err.message}`));
+        }
+      });
+    });
+
+    req.on("error", (err) => reject(new Error(`Teller balance request failed: ${err.message}`)));
+    req.end();
+  });
 }
 
 // Fetch transactions from Teller for a single mapping
@@ -249,6 +296,86 @@ function saveSyncLog(status, message, stats = {}) {
   console.log(`[${timestamp}] ${status}: ${message}`, stats);
 }
 
+// Reconcile an account: query Actual's current balance, fetch Teller's balance, add adjustment for delta.
+// Idempotent — only runs when mapping.pendingReconcile is true. Clears the flag on success.
+async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
+  if (!mapping.pendingReconcile) return null;
+
+  const label = mapping.name || mapping.id;
+  console.log(`   [${label}] Auto-reconcile requested...`);
+
+  let tellerBalance;
+  try {
+    tellerBalance = await fetchTellerBalance({ mapping, tellerConfig });
+  } catch (err) {
+    console.warn(`   [${label}] Could not fetch Teller balance for reconcile: ${err.message}`);
+    return null; // leave pendingReconcile=true so it retries on next sync
+  }
+  if (tellerBalance == null) {
+    console.warn(`   [${label}] Teller returned no balance; skipping reconcile this run`);
+    return null;
+  }
+  const tellerCents = Math.round(tellerBalance * 100);
+
+  // Sum existing Actual balance for this account.
+  // Use the SDK's getAccountBalance if available; otherwise sum transactions.
+  let actualCents;
+  try {
+    if (typeof actual.getAccountBalance === "function") {
+      const bal = await actual.getAccountBalance(mapping.actualAccountId);
+      actualCents = Math.round(Number(bal) * 100); // SDK returns cents in some versions, dollars in others
+      // Heuristic: if value is suspiciously large vs Teller's, assume it was already in cents
+      if (Math.abs(actualCents) > Math.abs(tellerCents) * 1000) {
+        actualCents = Math.round(Number(bal));
+      }
+    } else {
+      const txs = await actual.getTransactions(mapping.actualAccountId);
+      actualCents = txs.reduce((s, t) => s + (t.amount || 0), 0);
+    }
+  } catch (err) {
+    // Fallback: query transactions directly
+    const txs = await actual.getTransactions(mapping.actualAccountId);
+    actualCents = txs.reduce((s, t) => s + (t.amount || 0), 0);
+  }
+
+  const deltaCents = tellerCents - actualCents;
+
+  if (deltaCents === 0) {
+    console.log(`   [${label}] Already balanced ($${(tellerCents / 100).toFixed(2)}). Clearing reconcile flag.`);
+    updateMappingState(mapping.id, {
+      pendingReconcile: false,
+      lastReconcileAt: new Date().toISOString(),
+      lastReconcileDelta: 0,
+    });
+    return { delta: 0, tellerBalance, actualBalance: actualCents / 100 };
+  }
+
+  // Date the adjustment one day before the oldest imported transaction (or today if none).
+  const baseDate = oldestImportedDate || new Date().toISOString().slice(0, 10);
+  const dt = new Date(baseDate + "T00:00:00Z");
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const adjustmentDate = dt.toISOString().slice(0, 10);
+
+  console.log(`   [${label}] Reconcile: Actual=${(actualCents / 100).toFixed(2)} Teller=${tellerBalance.toFixed(2)} Δ=${(deltaCents / 100).toFixed(2)}`);
+
+  await actual.importTransactions(mapping.actualAccountId, [{
+    date: adjustmentDate,
+    amount: deltaCents,
+    payee_name: "Starting Balance Adjustment",
+    notes: `Auto-reconcile to bank balance ${tellerBalance.toFixed(2)} on ${new Date().toISOString().slice(0, 10)}`,
+    cleared: true,
+    imported_id: `auto-reconcile-${mapping.id}-${Date.now()}`,
+  }]);
+
+  updateMappingState(mapping.id, {
+    pendingReconcile: false,
+    lastReconcileAt: new Date().toISOString(),
+    lastReconcileDelta: deltaCents,
+  });
+
+  return { delta: deltaCents, tellerBalance, actualBalance: actualCents / 100 };
+}
+
 // Sync a single mapping. Returns per-mapping stats.
 async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
   const label = mapping.name || mapping.id;
@@ -256,27 +383,43 @@ async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
 
   const rawTransactions = await fetchTellerTransactions({ mapping, tellerConfig, startDate });
 
-  if (!rawTransactions || rawTransactions.length === 0) {
+  let result = { added: [], updated: [] };
+  let transactions = [];
+  let oldestImportedDate = null;
+
+  if (rawTransactions && rawTransactions.length > 0) {
+    transactions = transformTransactions(rawTransactions);
+    oldestImportedDate = transactions.reduce(
+      (min, t) => (min == null || t.date < min ? t.date : min),
+      null
+    );
+    console.log(`   [${label}] Importing ${transactions.length} transactions to Actual account ${mapping.actualAccountId}`);
+    result = await actual.importTransactions(mapping.actualAccountId, transactions);
+
+    // Per-mapping backup
+    const currentDate = new Date().toISOString().split("T")[0];
+    const backupFile = path.join(backupDir, `transactions_${currentDate}_${mapping.id}.json`);
+    fs.writeFileSync(backupFile, JSON.stringify(transactions, null, 2));
+  } else {
     console.log(`   [${label}] No transactions in window`);
-    return { mappingId: mapping.id, name: label, fetched: 0, added: 0, updated: 0 };
   }
 
-  const transactions = transformTransactions(rawTransactions);
-  console.log(`   [${label}] Importing ${transactions.length} transactions to Actual account ${mapping.actualAccountId}`);
-
-  const result = await actual.importTransactions(mapping.actualAccountId, transactions);
-
-  // Per-mapping backup
-  const currentDate = new Date().toISOString().split("T")[0];
-  const backupFile = path.join(backupDir, `transactions_${currentDate}_${mapping.id}.json`);
-  fs.writeFileSync(backupFile, JSON.stringify(transactions, null, 2));
+  // Auto-reconcile if requested (newly created accounts, or manually triggered)
+  let reconcileResult = null;
+  try {
+    reconcileResult = await maybeReconcile({ mapping, tellerConfig, oldestImportedDate });
+  } catch (err) {
+    console.error(`   [${label}] Reconcile failed:`, err.message);
+    // don't fail the sync — leave pendingReconcile true
+  }
 
   return {
     mappingId: mapping.id,
     name: label,
-    fetched: rawTransactions.length,
+    fetched: rawTransactions ? rawTransactions.length : 0,
     added: result.added.length,
     updated: result.updated.length,
+    reconcile: reconcileResult,
   };
 }
 
