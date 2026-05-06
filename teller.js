@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import * as actual from "@actual-app/api";
 import cron from "node-cron";
 import multer from "multer";
-import { runSync, loadConfig } from "./sync.js";
+import { runSync, loadConfig, saveMappings, newMappingId } from "./sync.js";
 
 dotenv.config();
 
@@ -55,31 +55,34 @@ app.use(cors(), express.json({ limit: '50mb' }));
 // Helper function to check configuration completeness
 function checkConfigStatus() {
   const config = loadConfig();
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  // Check if Teller config exists AND has valid (non-placeholder) values
-  const hasTellerConfig = Boolean(
-    config.teller?.accessToken &&
-    config.teller?.accountId &&
-    config.teller.accessToken.startsWith('token_') &&
-    config.teller.accountId.startsWith('acc_')
-  );
-
-  // Check if Actual Budget config exists AND has valid (non-placeholder) values
-  const hasActualConfig = Boolean(
+  // Actual server-level config (shared across all mappings)
+  const hasActualServerConfig = Boolean(
     config.actual?.serverURL &&
     config.actual?.password &&
     config.actual?.syncId &&
-    config.actual?.accountId &&
     !config.actual.serverURL.includes('your-actual-server') &&
     !config.actual.password.includes('your_actual_password') &&
-    config.actual.syncId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) &&
-    config.actual.accountId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    config.actual.syncId.match(UUID_RE)
   );
+
+  // At least one fully-formed mapping
+  const validMappings = (config.mappings || []).filter(m =>
+    m.tellerAccessToken && m.tellerAccessToken.startsWith('token_') &&
+    m.tellerAccountId && m.tellerAccountId.startsWith('acc_') &&
+    m.actualAccountId && UUID_RE.test(m.actualAccountId)
+  );
+
+  const hasTellerConfig = validMappings.length > 0;
+  const hasActualConfig = hasActualServerConfig;
 
   return {
     hasTellerConfig,
     hasActualConfig,
-    isComplete: hasTellerConfig && hasActualConfig
+    isComplete: hasTellerConfig && hasActualConfig,
+    mappingCount: (config.mappings || []).length,
+    validMappingCount: validMappings.length
   };
 }
 
@@ -279,6 +282,106 @@ app.get("/api/config/status", (req, res) => {
   try {
     const status = checkConfigStatus();
     res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Account mappings API =====
+// Each mapping = one Teller account paired with one Actual account.
+// A token from a single Teller Connect flow can be reused across multiple mappings
+// at the same institution.
+
+app.get("/api/mappings", (req, res) => {
+  try {
+    const config = loadConfig();
+    // Mask access tokens in response
+    const safe = (config.mappings || []).map(m => ({
+      id: m.id,
+      name: m.name || "",
+      tellerAccountId: m.tellerAccountId,
+      actualAccountId: m.actualAccountId,
+      tellerAccessTokenMasked: m.tellerAccessToken
+        ? `${m.tellerAccessToken.substring(0, 10)}...`
+        : null,
+    }));
+    res.json({ mappings: safe });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create or update a mapping. If body.id is set and matches an existing mapping, update.
+// Otherwise create a new one.
+app.post("/api/mappings", (req, res) => {
+  try {
+    const { id, name, tellerAccessToken, tellerAccountId, actualAccountId } = req.body;
+
+    if (!tellerAccessToken || !tellerAccountId || !actualAccountId) {
+      return res.status(400).json({
+        error: "Missing required fields: tellerAccessToken, tellerAccountId, actualAccountId"
+      });
+    }
+    if (!tellerAccessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "tellerAccessToken must start with 'token_'" });
+    }
+    if (!tellerAccountId.startsWith("acc_")) {
+      return res.status(400).json({ error: "tellerAccountId must start with 'acc_'" });
+    }
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(actualAccountId)) {
+      return res.status(400).json({ error: "actualAccountId must be a UUID" });
+    }
+
+    const config = loadConfig();
+    const mappings = config.mappings.slice();
+
+    if (id) {
+      const idx = mappings.findIndex(m => m.id === id);
+      if (idx === -1) return res.status(404).json({ error: "Mapping not found" });
+      mappings[idx] = {
+        ...mappings[idx],
+        name: name || mappings[idx].name,
+        tellerAccessToken,
+        tellerAccountId,
+        actualAccountId,
+      };
+    } else {
+      // Prevent duplicate (same tellerAccountId + actualAccountId)
+      const dup = mappings.find(m =>
+        m.tellerAccountId === tellerAccountId && m.actualAccountId === actualAccountId
+      );
+      if (dup) {
+        return res.status(409).json({ error: "Mapping already exists", id: dup.id });
+      }
+      mappings.push({
+        id: newMappingId(),
+        name: name || "Unnamed",
+        tellerAccessToken,
+        tellerAccountId,
+        actualAccountId,
+      });
+    }
+
+    saveMappings(mappings);
+    res.json({ success: true, count: mappings.length });
+  } catch (error) {
+    console.error("Error saving mapping:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/mappings/:id", (req, res) => {
+  try {
+    const id = req.params.id;
+    const config = loadConfig();
+    const before = config.mappings.length;
+    const mappings = config.mappings.filter(m => m.id !== id);
+    if (mappings.length === before) {
+      return res.status(404).json({ error: "Mapping not found" });
+    }
+    saveMappings(mappings);
+    res.json({ success: true, removed: id, remaining: mappings.length });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -51,6 +51,9 @@
         <button class="tab-button py-4 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700" data-tab="config">
           Configuration
         </button>
+        <button class="tab-button py-4 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700" data-tab="mappings">
+          Account Mappings
+        </button>
         <button class="tab-button py-4 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700" data-tab="logs">
           Sync Logs
         </button>
@@ -258,6 +261,57 @@
             </button>
             <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
               Save Configuration
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Mappings Tab -->
+    <div id="mappings-tab" class="tab-content hidden">
+      <div class="bg-white rounded-lg shadow p-6 mb-6">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-lg font-semibold">Account Mappings</h2>
+          <span id="mappingsCount" class="text-sm text-gray-500"></span>
+        </div>
+        <p class="text-sm text-gray-600 mb-4">
+          Each mapping pairs one Teller bank account with one Actual Budget account.
+          One Teller access token can be reused for multiple accounts at the same bank.
+        </p>
+        <div id="mappingsTable" class="border rounded-lg divide-y">
+          <div class="p-6 text-center text-gray-500">Loading mappings...</div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-4">Add Mapping</h2>
+        <form id="addMappingForm" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Display name</label>
+            <input type="text" name="name" placeholder="e.g. Chase Sapphire" required
+              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Teller access token</label>
+            <input type="password" name="tellerAccessToken" placeholder="token_..." required
+              class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500">
+            <p class="mt-1 text-xs text-gray-500">From a Teller Connect run. Same token works for multiple accounts at one bank — copy from an existing mapping if reusing.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Teller account ID</label>
+            <input type="text" name="tellerAccountId" placeholder="acc_..." required
+              class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500">
+            <p class="mt-1 text-xs text-gray-500">From the Teller dashboard or the Connect flow's accounts list.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Actual Budget account ID (UUID)</label>
+            <input type="text" name="actualAccountId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required
+              class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500">
+            <p class="mt-1 text-xs text-gray-500">Click into an Actual account; the URL ends in /accounts/&lt;UUID&gt;.</p>
+          </div>
+          <div class="flex justify-end">
+            <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+              Add Mapping
             </button>
           </div>
         </form>

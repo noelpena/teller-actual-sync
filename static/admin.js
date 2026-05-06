@@ -20,6 +20,7 @@ document.querySelectorAll('.tab-button').forEach(button => {
     // Load data for the tab
     if (tabName === 'dashboard') loadDashboard();
     if (tabName === 'config') loadConfig();
+    if (tabName === 'mappings') loadMappings();
     if (tabName === 'logs') loadLogs();
   });
 });
@@ -447,6 +448,93 @@ document.getElementById('syncNowBtn').addEventListener('click', async () => {
 // Test connection button event listeners
 document.getElementById('testTellerBtn').addEventListener('click', testTellerConnection);
 document.getElementById('testActualBtn').addEventListener('click', testActualConnection);
+
+// ===== Account Mappings =====
+
+async function loadMappings() {
+  const container = document.getElementById('mappingsTable');
+  const countEl = document.getElementById('mappingsCount');
+  try {
+    const res = await fetch('/api/mappings');
+    const { mappings } = await res.json();
+
+    countEl.textContent = `${mappings.length} mapping${mappings.length === 1 ? '' : 's'}`;
+
+    if (!mappings.length) {
+      container.innerHTML = '<div class="p-6 text-center text-gray-500">No mappings yet. Add one below.</div>';
+      return;
+    }
+
+    container.innerHTML = mappings.map(m => `
+      <div class="p-4 flex items-center justify-between">
+        <div class="flex-1 min-w-0">
+          <div class="font-medium">${escapeHtml(m.name || 'Unnamed')}</div>
+          <div class="text-xs text-gray-500 font-mono mt-1">
+            <div>Teller acct: ${escapeHtml(m.tellerAccountId)} (${escapeHtml(m.tellerAccessTokenMasked || '—')})</div>
+            <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
+          </div>
+        </div>
+        <button data-id="${m.id}" class="delete-mapping ml-4 px-3 py-1 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200">
+          Delete
+        </button>
+      </div>
+    `).join('');
+
+    container.querySelectorAll('.delete-mapping').forEach(btn => {
+      btn.addEventListener('click', () => deleteMapping(btn.dataset.id));
+    });
+  } catch (error) {
+    console.error('Error loading mappings:', error);
+    container.innerHTML = '<div class="p-6 text-center text-red-500">Error loading mappings</div>';
+  }
+}
+
+async function deleteMapping(id) {
+  if (!confirm('Delete this mapping? Past synced transactions in Actual will not be removed.')) return;
+  try {
+    const res = await fetch(`/api/mappings/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Delete failed');
+    showToast('Mapping deleted', 'success');
+    loadMappings();
+  } catch (error) {
+    showToast(`Failed: ${error.message}`, 'error');
+  }
+}
+
+document.getElementById('addMappingForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const fd = new FormData(form);
+  const payload = {
+    name: fd.get('name'),
+    tellerAccessToken: fd.get('tellerAccessToken'),
+    tellerAccountId: fd.get('tellerAccountId'),
+    actualAccountId: fd.get('actualAccountId'),
+  };
+
+  try {
+    const res = await fetch('/api/mappings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to add');
+    showToast('Mapping added', 'success');
+    form.reset();
+    loadMappings();
+  } catch (error) {
+    showToast(`Failed: ${error.message}`, 'error');
+  }
+});
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 // Initial load
 loadDashboard();
