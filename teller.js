@@ -1256,8 +1256,21 @@ app.get("/admin", (req, res) => {
   res.type("html").send(html);
 });
 
+// Coerce any thrown value into a string message — SDK errors sometimes have non-string
+// .message fields, which previously surfaced as "[object Object]" in the UI.
+function errMsg(err) {
+  if (err == null) return "unknown error";
+  if (typeof err === "string") return err;
+  if (typeof err.message === "string") return err.message;
+  if (err.message && typeof err.message === "object") {
+    try { return JSON.stringify(err.message); } catch (_) { return String(err.message); }
+  }
+  try { return JSON.stringify(err); } catch (_) { return String(err); }
+}
+
 // Helper: ensure Actual SDK is initialized + budget downloaded.
 // Used by both list (GET) and create (POST) endpoints. Idempotent — safe to call repeatedly.
+// runSync() shuts the SDK down at the end of every sync, so this often needs to re-init.
 async function ensureActualReady() {
   const config = loadConfig();
   if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
@@ -1269,9 +1282,21 @@ async function ensureActualReady() {
       serverURL: config.actual.serverURL,
       password: config.actual.password,
     });
+  } catch (e) {
+    const msg = errMsg(e).toLowerCase();
+    if (!msg.includes("already")) {
+      console.error("actual.init failed:", e);
+      throw new Error("Actual init failed: " + errMsg(e));
+    }
+  }
+  try {
     await actual.downloadBudget(config.actual.syncId);
   } catch (e) {
-    if (!String(e?.message || "").toLowerCase().includes("already")) throw e;
+    const msg = errMsg(e).toLowerCase();
+    if (!msg.includes("already")) {
+      console.error("actual.downloadBudget failed:", e);
+      throw new Error("Actual downloadBudget failed: " + errMsg(e));
+    }
   }
 }
 
@@ -1293,7 +1318,7 @@ app.post("/api/actual/accounts", async (req, res) => {
     res.json({ success: true, id });
   } catch (error) {
     console.error("Error creating Actual account:", error);
-    res.status(500).json({ error: error?.message || String(error) });
+    res.status(500).json({ error: errMsg(error) });
   }
 });
 
@@ -1312,7 +1337,7 @@ app.get("/api/actual/accounts", async (req, res) => {
     });
   } catch (error) {
     console.error("Error listing Actual accounts:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: errMsg(error) });
   }
 });
 

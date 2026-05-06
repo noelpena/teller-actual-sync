@@ -718,11 +718,29 @@ let _newBankToken = null;
 let _newBankAccounts = [];
 let _actualAccountsCache = null;
 
+// Stringify whatever a server might send back as an "error" field
+function errorMessage(data, fallback) {
+  if (!data) return fallback;
+  if (typeof data.error === 'string') return data.error;
+  if (data.error && typeof data.error === 'object') {
+    try { return JSON.stringify(data.error); } catch (_) { return String(data.error); }
+  }
+  return fallback;
+}
+
+async function safeJson(res) {
+  try { return await res.json(); } catch (_) { return {}; }
+}
+
 async function fetchActualAccounts() {
   if (_actualAccountsCache) return _actualAccountsCache;
   const res = await fetch('/api/actual/accounts');
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to load Actual accounts');
+  const data = await safeJson(res);
+  if (!res.ok) {
+    const msg = errorMessage(data, `HTTP ${res.status}`);
+    console.error('fetchActualAccounts failed:', res.status, data);
+    throw new Error(msg);
+  }
   _actualAccountsCache = data.accounts || [];
   return _actualAccountsCache;
 }
@@ -733,8 +751,12 @@ async function fetchTellerAccountsForToken(accessToken) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accessToken }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to load Teller accounts');
+  const data = await safeJson(res);
+  if (!res.ok) {
+    const msg = errorMessage(data, `HTTP ${res.status}`);
+    console.error('fetchTellerAccountsForToken failed:', res.status, data);
+    throw new Error(msg);
+  }
   return data.accounts || [];
 }
 
