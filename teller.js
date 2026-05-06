@@ -1235,25 +1235,51 @@ app.get("/admin", (req, res) => {
   res.type("html").send(html);
 });
 
+// Helper: ensure Actual SDK is initialized + budget downloaded.
+// Used by both list (GET) and create (POST) endpoints. Idempotent — safe to call repeatedly.
+async function ensureActualReady() {
+  const config = loadConfig();
+  if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
+    throw new Error("Actual Budget is not configured (serverURL/password/syncId)");
+  }
+  try {
+    await actual.init({
+      dataDir: config.actual.dataDir,
+      serverURL: config.actual.serverURL,
+      password: config.actual.password,
+    });
+    await actual.downloadBudget(config.actual.syncId);
+  } catch (e) {
+    if (!String(e?.message || "").toLowerCase().includes("already")) throw e;
+  }
+}
+
+// Create a new account in Actual (called from the Connect Another Bank flow)
+app.post("/api/actual/accounts", async (req, res) => {
+  try {
+    const { name, offbudget, initialBalance } = req.body;
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ error: "name is required" });
+    }
+    const balance = Number.isFinite(Number(initialBalance)) ? Number(initialBalance) : 0;
+
+    await ensureActualReady();
+    // Actual SDK signature: createAccount({ name, offbudget }, initialBalanceCents)
+    const id = await actual.createAccount(
+      { name: name.trim(), offbudget: !!offbudget },
+      Math.round(balance * 100)
+    );
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error("Error creating Actual account:", error);
+    res.status(500).json({ error: error?.message || String(error) });
+  }
+});
+
 // List accounts in the Actual budget (for mapping dropdowns)
 app.get("/api/actual/accounts", async (req, res) => {
   try {
-    // Lazy-init if needed (covers cold starts where startup init was skipped)
-    const config = loadConfig();
-    if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
-      return res.status(400).json({ error: "Actual Budget is not configured" });
-    }
-    try {
-      await actual.init({
-        dataDir: config.actual.dataDir,
-        serverURL: config.actual.serverURL,
-        password: config.actual.password,
-      });
-      await actual.downloadBudget(config.actual.syncId);
-    } catch (e) {
-      // init may already have been done at startup; ignore "already initialized"
-      if (!String(e?.message || "").toLowerCase().includes("already")) throw e;
-    }
+    await ensureActualReady();
     const accounts = await actual.getAccounts();
     res.json({
       accounts: accounts.map(a => ({

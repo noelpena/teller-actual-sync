@@ -707,6 +707,12 @@ async function fetchTellerAccountsForToken(accessToken) {
   return data.accounts || [];
 }
 
+// Smart default: investments and loans go off-budget in Actual; everything else on-budget.
+function suggestOffBudget(tellerAccount) {
+  const t = (tellerAccount?.type || '').toLowerCase();
+  return t === 'investment' || t === 'loan';
+}
+
 function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMappings) {
   const list = document.getElementById('newBankAccountsList');
 
@@ -723,7 +729,6 @@ function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMap
     return;
   }
 
-  // Split: rows that already have a mapping (token rotation) vs new
   const rotationRows = [];
   const newRows = [];
 
@@ -748,22 +753,45 @@ function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMap
         </div>
       `);
     } else {
+      const offBudgetDefault = suggestOffBudget(t);
       newRows.push(`
-        <div class="border rounded-md p-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-center" data-teller-id="${escapeHtml(t.id)}" data-action="create">
-          <div class="md:col-span-5">
-            <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
-            <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
+        <div class="border rounded-md p-3" data-teller-id="${escapeHtml(t.id)}" data-action="create">
+          <div class="flex items-start justify-between gap-3 mb-2">
+            <div class="flex-1 min-w-0">
+              <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
+              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+              <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
+            </div>
+            <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
+              <option value="create" selected>Create new Actual account</option>
+              <option value="existing">Use existing Actual account</option>
+              <option value="skip">Skip</option>
+            </select>
           </div>
-          <div class="md:col-span-2">
-            <input type="text" class="map-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
-              placeholder="display name" value="${escapeHtml(t.name || '')}">
+
+          <div class="mode-create grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+            <div class="md:col-span-7">
+              <label class="block text-xs text-gray-600 mb-1">New Actual account name</label>
+              <input type="text" class="create-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                value="${escapeHtml(t.name || '')}">
+            </div>
+            <div class="md:col-span-5">
+              <label class="block text-xs text-gray-600 mb-1">Type</label>
+              <label class="text-sm flex items-center gap-2">
+                <input type="checkbox" class="create-offbudget" ${offBudgetDefault ? 'checked' : ''}>
+                Off-budget account
+              </label>
+              <p class="text-xs text-gray-400 mt-1">Off-budget = investments, loans. Leave unchecked for checking, savings, credit cards.</p>
+            </div>
           </div>
-          <div class="md:col-span-5">
+
+          <div class="mode-existing hidden">
+            <label class="block text-xs text-gray-600 mb-1">Actual Budget account</label>
             <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
-              <option value="">— skip —</option>
+              <option value="">— pick one —</option>
               ${actualOptions}
             </select>
+            <input type="text" class="map-name hidden" value="${escapeHtml(t.name || '')}">
           </div>
         </div>
       `);
@@ -776,6 +804,20 @@ function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMap
     newRows.length ? `<div class="text-xs font-semibold text-gray-700 uppercase tracking-wide pt-2">New accounts to add</div>` : '',
     ...newRows,
   ].filter(Boolean).join('');
+
+  // Wire up mode toggles
+  list.querySelectorAll('[data-action="create"]').forEach(row => {
+    const sel = row.querySelector('.row-mode');
+    const createBlock = row.querySelector('.mode-create');
+    const existingBlock = row.querySelector('.mode-existing');
+    sel.addEventListener('change', () => {
+      const mode = sel.value;
+      createBlock.classList.toggle('hidden', mode !== 'create');
+      existingBlock.classList.toggle('hidden', mode !== 'existing');
+      row.dataset.mode = mode;
+    });
+    row.dataset.mode = 'create';
+  });
 }
 
 function showNewBankPanel(institutionName) {
@@ -841,7 +883,7 @@ async function handleSaveNewBankMappings() {
     return;
   }
   const rows = document.querySelectorAll('#newBankAccountsList [data-teller-id]');
-  const toCreate = [];
+  const plans = [];        // [{ tellerAccountId, mode, ...modeFields }]
   const toRotate = [];
 
   rows.forEach(row => {
@@ -850,65 +892,107 @@ async function handleSaveNewBankMappings() {
     if (action === 'rotate') {
       const cb = row.querySelector('.rotate-include');
       if (cb && cb.checked) toRotate.push(tellerAccountId);
-    } else {
-      const actualAccountId = row.querySelector('.map-actual').value;
-      const name = row.querySelector('.map-name').value || '';
-      if (actualAccountId) {
-        toCreate.push({ tellerAccountId, actualAccountId, name, tellerAccessToken: _newBankToken });
-      }
+      return;
+    }
+    const mode = row.dataset.mode || 'create';
+    if (mode === 'skip') return;
+
+    if (mode === 'create') {
+      const name = (row.querySelector('.create-name')?.value || '').trim();
+      const offbudget = !!row.querySelector('.create-offbudget')?.checked;
+      if (!name) return;
+      plans.push({ tellerAccountId, mode: 'create', name, offbudget });
+    } else if (mode === 'existing') {
+      const actualAccountId = row.querySelector('.map-actual')?.value;
+      const name = (row.querySelector('.map-name')?.value || '').trim();
+      if (!actualAccountId) return;
+      plans.push({ tellerAccountId, mode: 'existing', name, actualAccountId });
     }
   });
 
-  if (toCreate.length === 0 && toRotate.length === 0) {
+  if (plans.length === 0 && toRotate.length === 0) {
     showToast('Nothing to save. Pick at least one account or rotation.', 'error');
     return;
   }
 
-  let rotated = 0;
-  let created = 0;
-  let failed = 0;
+  setSaveBusy(true);
+  let rotated = 0, created = 0, accountsCreated = 0, failed = 0;
 
-  // Rotate first so existing mappings come back online before any new ones
-  if (toRotate.length > 0) {
-    try {
-      const res = await fetch('/api/mappings/rotate-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newAccessToken: _newBankToken, tellerAccountIds: toRotate }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Rotation failed');
-      rotated = data.rotated;
-    } catch (err) {
-      console.error('Rotation failed:', err);
-      failed += toRotate.length;
+  try {
+    // 1. Rotate tokens first so existing mappings come back online quickly
+    if (toRotate.length > 0) {
+      try {
+        const res = await fetch('/api/mappings/rotate-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newAccessToken: _newBankToken, tellerAccountIds: toRotate }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Rotation failed');
+        rotated = data.rotated;
+      } catch (err) {
+        console.error('Rotation failed:', err);
+        failed += toRotate.length;
+      }
     }
-  }
 
-  for (const m of toCreate) {
-    try {
-      const res = await fetch('/api/mappings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(m),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Save failed');
-      created++;
-    } catch (err) {
-      console.error('Failed to save mapping:', m, err);
-      failed++;
+    // 2. For each plan: ensure we have an Actual account ID, then create the mapping
+    for (const p of plans) {
+      try {
+        let actualAccountId = p.actualAccountId;
+        if (p.mode === 'create') {
+          const aRes = await fetch('/api/actual/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: p.name, offbudget: p.offbudget, initialBalance: 0 }),
+          });
+          const aData = await aRes.json();
+          if (!aRes.ok || !aData.id) throw new Error(aData.error || 'Actual account creation failed');
+          actualAccountId = aData.id;
+          accountsCreated++;
+        }
+
+        const mRes = await fetch('/api/mappings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: p.name,
+            tellerAccountId: p.tellerAccountId,
+            actualAccountId,
+            tellerAccessToken: _newBankToken,
+          }),
+        });
+        const mData = await mRes.json();
+        if (!mRes.ok) throw new Error(mData.error || 'Mapping save failed');
+        created++;
+      } catch (err) {
+        console.error('Failed to add mapping for', p.tellerAccountId, err);
+        failed++;
+      }
     }
+  } finally {
+    setSaveBusy(false);
   }
 
   const parts = [];
   if (rotated) parts.push(`rotated ${rotated} token${rotated === 1 ? '' : 's'}`);
+  if (accountsCreated) parts.push(`created ${accountsCreated} Actual account${accountsCreated === 1 ? '' : 's'}`);
   if (created) parts.push(`added ${created} mapping${created === 1 ? '' : 's'}`);
   if (failed) parts.push(`${failed} failed`);
   showToast(parts.join(', ') || 'No changes', failed ? 'error' : 'success');
 
+  // Refresh the Actual accounts cache so subsequent dropdowns reflect new accounts
+  _actualAccountsCache = null;
+
   hideNewBankPanel();
   loadMappings();
+}
+
+function setSaveBusy(busy) {
+  const btn = document.getElementById('newBankSaveBtn');
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.textContent = busy ? 'Saving…' : 'Save selected mappings';
 }
 
 document.getElementById('connectAnotherBankBtn')?.addEventListener('click', handleConnectAnotherBank);
