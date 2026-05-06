@@ -451,37 +451,87 @@ document.getElementById('testActualBtn').addEventListener('click', testActualCon
 
 // ===== Account Mappings =====
 
+function statusBadge(m) {
+  if (m.disabled) return '<span class="px-2 py-0.5 text-xs rounded bg-gray-200 text-gray-700">Disabled</span>';
+  if (m.needsReconnect) return '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Needs reconnect</span>';
+  if (m.lastSyncStatus === 'success') return '<span class="px-2 py-0.5 text-xs rounded bg-green-100 text-green-800">OK</span>';
+  if (m.lastSyncStatus === 'error') return '<span class="px-2 py-0.5 text-xs rounded bg-red-100 text-red-800">Error</span>';
+  if (m.lastSyncStatus === 'auth_error') return '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Auth error</span>';
+  return '<span class="px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-600">Never synced</span>';
+}
+
+function relativeTime(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return Math.floor(ms / 60_000) + 'm ago';
+  if (ms < 86_400_000) return Math.floor(ms / 3_600_000) + 'h ago';
+  return Math.floor(ms / 86_400_000) + 'd ago';
+}
+
 async function loadMappings() {
   const container = document.getElementById('mappingsTable');
   const countEl = document.getElementById('mappingsCount');
   try {
-    const res = await fetch('/api/mappings');
-    const { mappings } = await res.json();
+    const [mRes, aRes] = await Promise.all([
+      fetch('/api/mappings'),
+      fetch('/api/actual/accounts').catch(() => null),
+    ]);
+    const { mappings } = await mRes.json();
+    const actualAccounts = aRes && aRes.ok ? (await aRes.json()).accounts : [];
 
     countEl.textContent = `${mappings.length} mapping${mappings.length === 1 ? '' : 's'}`;
 
     if (!mappings.length) {
-      container.innerHTML = '<div class="p-6 text-center text-gray-500">No mappings yet. Add one below.</div>';
+      container.innerHTML = '<div class="p-6 text-center text-gray-500">No mappings yet. Connect a bank above.</div>';
       return;
     }
 
-    container.innerHTML = mappings.map(m => `
-      <div class="p-4 flex items-center justify-between">
-        <div class="flex-1 min-w-0">
-          <div class="font-medium">${escapeHtml(m.name || 'Unnamed')}</div>
-          <div class="text-xs text-gray-500 font-mono mt-1">
-            <div>Teller acct: ${escapeHtml(m.tellerAccountId)} (${escapeHtml(m.tellerAccessTokenMasked || '—')})</div>
-            <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
+    container.innerHTML = mappings.map(m => {
+      const stats = m.lastSyncStats
+        ? `${m.lastSyncStats.added} added, ${m.lastSyncStats.updated} updated`
+        : '—';
+      const errLine = m.lastError
+        ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(m.lastError).slice(0, 200)}</div>`
+        : '';
+      return `
+        <div class="p-4" data-mapping-id="${m.id}">
+          <div class="flex items-start justify-between gap-4">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <div class="font-medium">${escapeHtml(m.name || 'Unnamed')}</div>
+                ${statusBadge(m)}
+              </div>
+              <div class="text-xs text-gray-500 font-mono mt-1 space-y-0.5">
+                <div>Teller acct: ${escapeHtml(m.tellerAccountId)} (${escapeHtml(m.tellerAccessTokenMasked || '—')})</div>
+                <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
+                <div class="text-gray-400">Last sync: ${relativeTime(m.lastSyncAt)} · ${escapeHtml(stats)}</div>
+              </div>
+              ${errLine}
+            </div>
+            <div class="flex flex-col gap-1 shrink-0">
+              <button data-id="${m.id}" class="sync-mapping px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Sync</button>
+              <button data-id="${m.id}" class="edit-mapping px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Edit</button>
+              <button data-id="${m.id}" data-disabled="${m.disabled ? '1' : '0'}" class="toggle-mapping px-3 py-1 text-xs ${m.disabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'} rounded">${m.disabled ? 'Enable' : 'Disable'}</button>
+              <button data-id="${m.id}" class="delete-mapping px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">Delete</button>
+            </div>
           </div>
         </div>
-        <button data-id="${m.id}" class="delete-mapping ml-4 px-3 py-1 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200">
-          Delete
-        </button>
-      </div>
-    `).join('');
+      `;
+    }).join('');
 
     container.querySelectorAll('.delete-mapping').forEach(btn => {
       btn.addEventListener('click', () => deleteMapping(btn.dataset.id));
+    });
+    container.querySelectorAll('.sync-mapping').forEach(btn => {
+      btn.addEventListener('click', () => syncSingleMapping(btn.dataset.id, btn));
+    });
+    container.querySelectorAll('.toggle-mapping').forEach(btn => {
+      btn.addEventListener('click', () => toggleMapping(btn.dataset.id, btn.dataset.disabled === '1'));
+    });
+    container.querySelectorAll('.edit-mapping').forEach(btn => {
+      const m = mappings.find(x => x.id === btn.dataset.id);
+      btn.addEventListener('click', () => openEditMapping(m, actualAccounts));
     });
   } catch (error) {
     console.error('Error loading mappings:', error);
@@ -500,6 +550,101 @@ async function deleteMapping(id) {
   } catch (error) {
     showToast(`Failed: ${error.message}`, 'error');
   }
+}
+
+async function syncSingleMapping(id, btn) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch(`/api/mappings/${id}/sync`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Sync failed');
+    showToast(`Sync OK: ${data.stats.added} added, ${data.stats.updated} updated`, 'success');
+  } catch (error) {
+    showToast(`Sync failed: ${error.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+    loadMappings();
+  }
+}
+
+async function toggleMapping(id, isDisabled) {
+  try {
+    const res = await fetch(`/api/mappings/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disabled: !isDisabled }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Update failed');
+    showToast(isDisabled ? 'Mapping enabled' : 'Mapping disabled', 'success');
+    loadMappings();
+  } catch (error) {
+    showToast(`Failed: ${error.message}`, 'error');
+  }
+}
+
+function openEditMapping(mapping, actualAccounts) {
+  const actualOptions = (actualAccounts || [])
+    .filter(a => !a.closed)
+    .map(a => `<option value="${escapeHtml(a.id)}" ${a.id === mapping.actualAccountId ? 'selected' : ''}>${escapeHtml(a.name)}${a.offbudget ? ' (off-budget)' : ''}</option>`)
+    .join('');
+  const html = `
+    <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" id="editMappingModal">
+      <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
+        <h3 class="text-lg font-semibold mb-4">Edit mapping</h3>
+        <form id="editMappingForm" class="space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Display name</label>
+            <input type="text" name="name" value="${escapeHtml(mapping.name || '')}" required
+              class="w-full px-3 py-2 border border-gray-300 rounded-md">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Actual Budget account</label>
+            <select name="actualAccountId" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+              ${actualOptions}
+            </select>
+          </div>
+          <div class="text-xs text-gray-500 font-mono pt-1">
+            Teller account: ${escapeHtml(mapping.tellerAccountId)} (read-only — to change, delete and re-create the mapping)
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <button type="button" id="editMappingCancel" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded">Cancel</button>
+            <button type="submit" class="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html;
+  document.body.appendChild(wrapper.firstElementChild);
+
+  const close = () => document.getElementById('editMappingModal')?.remove();
+  document.getElementById('editMappingCancel').addEventListener('click', close);
+  document.getElementById('editMappingForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      const res = await fetch(`/api/mappings/${mapping.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: fd.get('name'),
+          actualAccountId: fd.get('actualAccountId'),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed');
+      showToast('Mapping updated', 'success');
+      close();
+      loadMappings();
+    } catch (error) {
+      showToast(`Failed: ${error.message}`, 'error');
+    }
+  });
 }
 
 document.getElementById('addMappingForm').addEventListener('submit', async (e) => {
@@ -564,9 +709,9 @@ async function fetchTellerAccountsForToken(accessToken) {
 
 function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMappings) {
   const list = document.getElementById('newBankAccountsList');
-  const existingPairs = new Set(
-    (existingMappings || []).map(m => `${m.tellerAccountId}|${m.actualAccountId}`)
-  );
+
+  const byTellerAccountId = new Map();
+  (existingMappings || []).forEach(m => byTellerAccountId.set(m.tellerAccountId, m));
 
   const actualOptions = actualAccounts
     .filter(a => !a.closed)
@@ -578,29 +723,59 @@ function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMap
     return;
   }
 
-  list.innerHTML = tellerAccounts.map(t => {
+  // Split: rows that already have a mapping (token rotation) vs new
+  const rotationRows = [];
+  const newRows = [];
+
+  tellerAccounts.forEach(t => {
     const subtitle = [t.institution, t.type, t.subtype, t.last_four ? `••${t.last_four}` : null]
       .filter(Boolean).join(' · ');
-    return `
-      <div class="border rounded-md p-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-center" data-teller-id="${escapeHtml(t.id)}">
-        <div class="md:col-span-5">
-          <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
-          <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-          <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
+    const existing = byTellerAccountId.get(t.id);
+
+    if (existing) {
+      rotationRows.push(`
+        <div class="border rounded-md p-3 bg-blue-50" data-teller-id="${escapeHtml(t.id)}" data-action="rotate">
+          <div class="flex items-start justify-between gap-2">
+            <div class="flex-1">
+              <div class="font-medium">${escapeHtml(t.name || t.id)} <span class="text-xs text-blue-700">(token will be rotated)</span></div>
+              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+              <div class="text-xs font-mono text-gray-400 mt-1">Mapped to: ${escapeHtml(existing.name)} (Actual ${escapeHtml(existing.actualAccountId.slice(0, 8))}…)</div>
+            </div>
+            <label class="text-xs flex items-center gap-1">
+              <input type="checkbox" class="rotate-include" checked> rotate
+            </label>
+          </div>
         </div>
-        <div class="md:col-span-2">
-          <input type="text" class="map-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
-            placeholder="display name" value="${escapeHtml(t.name || '')}">
+      `);
+    } else {
+      newRows.push(`
+        <div class="border rounded-md p-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-center" data-teller-id="${escapeHtml(t.id)}" data-action="create">
+          <div class="md:col-span-5">
+            <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
+          </div>
+          <div class="md:col-span-2">
+            <input type="text" class="map-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
+              placeholder="display name" value="${escapeHtml(t.name || '')}">
+          </div>
+          <div class="md:col-span-5">
+            <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
+              <option value="">— skip —</option>
+              ${actualOptions}
+            </select>
+          </div>
         </div>
-        <div class="md:col-span-5">
-          <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
-            <option value="">— skip —</option>
-            ${actualOptions}
-          </select>
-        </div>
-      </div>
-    `;
-  }).join('');
+      `);
+    }
+  });
+
+  list.innerHTML = [
+    rotationRows.length ? `<div class="text-xs font-semibold text-blue-700 uppercase tracking-wide">Existing mappings — token rotation</div>` : '',
+    ...rotationRows,
+    newRows.length ? `<div class="text-xs font-semibold text-gray-700 uppercase tracking-wide pt-2">New accounts to add</div>` : '',
+    ...newRows,
+  ].filter(Boolean).join('');
 }
 
 function showNewBankPanel(institutionName) {
@@ -667,22 +842,49 @@ async function handleSaveNewBankMappings() {
   }
   const rows = document.querySelectorAll('#newBankAccountsList [data-teller-id]');
   const toCreate = [];
+  const toRotate = [];
+
   rows.forEach(row => {
     const tellerAccountId = row.dataset.tellerId;
-    const actualAccountId = row.querySelector('.map-actual').value;
-    const name = row.querySelector('.map-name').value || '';
-    if (actualAccountId) {
-      toCreate.push({ tellerAccountId, actualAccountId, name, tellerAccessToken: _newBankToken });
+    const action = row.dataset.action;
+    if (action === 'rotate') {
+      const cb = row.querySelector('.rotate-include');
+      if (cb && cb.checked) toRotate.push(tellerAccountId);
+    } else {
+      const actualAccountId = row.querySelector('.map-actual').value;
+      const name = row.querySelector('.map-name').value || '';
+      if (actualAccountId) {
+        toCreate.push({ tellerAccountId, actualAccountId, name, tellerAccessToken: _newBankToken });
+      }
     }
   });
 
-  if (toCreate.length === 0) {
-    showToast('No accounts selected. Pick at least one Actual account.', 'error');
+  if (toCreate.length === 0 && toRotate.length === 0) {
+    showToast('Nothing to save. Pick at least one account or rotation.', 'error');
     return;
   }
 
+  let rotated = 0;
   let created = 0;
   let failed = 0;
+
+  // Rotate first so existing mappings come back online before any new ones
+  if (toRotate.length > 0) {
+    try {
+      const res = await fetch('/api/mappings/rotate-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newAccessToken: _newBankToken, tellerAccountIds: toRotate }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Rotation failed');
+      rotated = data.rotated;
+    } catch (err) {
+      console.error('Rotation failed:', err);
+      failed += toRotate.length;
+    }
+  }
+
   for (const m of toCreate) {
     try {
       const res = await fetch('/api/mappings', {
@@ -699,8 +901,11 @@ async function handleSaveNewBankMappings() {
     }
   }
 
-  if (created > 0) showToast(`Added ${created} mapping${created === 1 ? '' : 's'}${failed ? ` (${failed} failed)` : ''}`, failed ? 'error' : 'success');
-  else showToast(`Failed to save mappings`, 'error');
+  const parts = [];
+  if (rotated) parts.push(`rotated ${rotated} token${rotated === 1 ? '' : 's'}`);
+  if (created) parts.push(`added ${created} mapping${created === 1 ? '' : 's'}`);
+  if (failed) parts.push(`${failed} failed`);
+  showToast(parts.join(', ') || 'No changes', failed ? 'error' : 'success');
 
   hideNewBankPanel();
   loadMappings();

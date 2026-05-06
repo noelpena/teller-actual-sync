@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import * as actual from "@actual-app/api";
 import cron from "node-cron";
 import multer from "multer";
-import { runSync, loadConfig, saveMappings, newMappingId } from "./sync.js";
+import { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId } from "./sync.js";
 
 dotenv.config();
 
@@ -304,9 +304,95 @@ app.get("/api/mappings", (req, res) => {
       tellerAccessTokenMasked: m.tellerAccessToken
         ? `${m.tellerAccessToken.substring(0, 10)}...`
         : null,
+      disabled: !!m.disabled,
+      needsReconnect: !!m.needsReconnect,
+      lastSyncAt: m.lastSyncAt || null,
+      lastSyncStatus: m.lastSyncStatus || null,
+      lastSyncStats: m.lastSyncStats || null,
+      lastError: m.lastError || null,
     }));
     res.json({ mappings: safe });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Edit a mapping (name, actualAccountId, disabled). For tellerAccountId/token rotation,
+// use the dedicated POST /api/mappings/rotate-token endpoint instead.
+app.patch("/api/mappings/:id", (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, actualAccountId, disabled } = req.body;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    const config = loadConfig();
+    const mappings = config.mappings.slice();
+    const idx = mappings.findIndex(m => m.id === id);
+    if (idx === -1) return res.status(404).json({ error: "Mapping not found" });
+
+    const patch = {};
+    if (name !== undefined) patch.name = String(name);
+    if (typeof disabled === "boolean") patch.disabled = disabled;
+    if (actualAccountId !== undefined) {
+      if (!UUID_RE.test(actualAccountId)) {
+        return res.status(400).json({ error: "actualAccountId must be a UUID" });
+      }
+      patch.actualAccountId = actualAccountId;
+    }
+
+    mappings[idx] = { ...mappings[idx], ...patch };
+    saveMappings(mappings);
+    res.json({ success: true, mapping: { id: mappings[idx].id, ...patch } });
+  } catch (error) {
+    console.error("Error patching mapping:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trigger a sync for a single mapping
+app.post("/api/mappings/:id/sync", async (req, res) => {
+  try {
+    const stats = await runSyncForMapping(req.params.id);
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error?.message || String(error),
+      isAuth: error?.name === "TellerAuthError",
+    });
+  }
+});
+
+// Rotate the access token across all mappings for a given Teller account ID set.
+// Used after re-running Teller Connect for a bank that was previously authorized:
+// - body.newAccessToken: the freshly minted token
+// - body.tellerAccountIds: list of acc_ ids that this token covers
+// All existing mappings whose tellerAccountId is in that list get their token replaced
+// and have needsReconnect cleared.
+app.post("/api/mappings/rotate-token", (req, res) => {
+  try {
+    const { newAccessToken, tellerAccountIds } = req.body;
+    if (!newAccessToken || !newAccessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "Missing/invalid newAccessToken" });
+    }
+    if (!Array.isArray(tellerAccountIds) || tellerAccountIds.length === 0) {
+      return res.status(400).json({ error: "Missing tellerAccountIds[]" });
+    }
+
+    const config = loadConfig();
+    const idSet = new Set(tellerAccountIds);
+    let rotated = 0;
+    const mappings = config.mappings.map(m => {
+      if (idSet.has(m.tellerAccountId)) {
+        rotated++;
+        return { ...m, tellerAccessToken: newAccessToken, needsReconnect: false, lastError: null };
+      }
+      return m;
+    });
+    saveMappings(mappings);
+    res.json({ success: true, rotated });
+  } catch (error) {
+    console.error("Error rotating token:", error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -94,6 +94,13 @@ function saveMappings(mappings) {
     tellerAccessToken: m.tellerAccessToken,
     tellerAccountId: m.tellerAccountId,
     actualAccountId: m.actualAccountId,
+    disabled: !!m.disabled,
+    needsReconnect: !!m.needsReconnect,
+    // Sync state — preserved across saves
+    lastSyncAt: m.lastSyncAt || null,
+    lastSyncStatus: m.lastSyncStatus || null,    // 'success' | 'error' | 'auth_error' | 'skipped'
+    lastSyncStats: m.lastSyncStats || null,
+    lastError: m.lastError || null,
   }));
 
   const next = { ...existing, mappings: cleaned };
@@ -110,6 +117,17 @@ function saveMappings(mappings) {
 
   fs.writeFileSync(configPath, JSON.stringify(next, null, 2));
   return cleaned;
+}
+
+// Update sync state for a single mapping (atomic read-modify-write of config.json)
+function updateMappingState(mappingId, patch) {
+  const config = loadConfig();
+  const mappings = config.mappings.slice();
+  const idx = mappings.findIndex(m => m.id === mappingId);
+  if (idx === -1) return null;
+  mappings[idx] = { ...mappings[idx], ...patch };
+  saveMappings(mappings);
+  return mappings[idx];
 }
 
 // Get transaction start date
@@ -137,6 +155,15 @@ function buildTellerAgent(tellerConfig) {
   });
 }
 
+// Custom error type so callers can detect "Teller said this token is no good, reconnect"
+class TellerAuthError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.name = "TellerAuthError";
+    this.statusCode = statusCode;
+  }
+}
+
 // Fetch transactions from Teller for a single mapping
 function fetchTellerTransactions({ mapping, tellerConfig, startDate }) {
   const agent = buildTellerAgent(tellerConfig);
@@ -160,6 +187,11 @@ function fetchTellerTransactions({ mapping, tellerConfig, startDate }) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try { resolve(JSON.parse(data)); }
           catch (err) { reject(new Error(`Failed to parse Teller response: ${err.message}`)); }
+        } else if (res.statusCode === 401 || res.statusCode === 403) {
+          reject(new TellerAuthError(
+            `Teller auth error ${res.statusCode}: token may be expired or revoked. Reconnect this bank.`,
+            res.statusCode
+          ));
         } else {
           reject(new Error(`Teller API error: ${res.statusCode} ${res.statusMessage}\nDetails: ${data}`));
         }
@@ -248,6 +280,54 @@ async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
   };
 }
 
+// Run a sync for a single mapping by id. Used by the per-mapping "Sync" button.
+async function runSyncForMapping(mappingId) {
+  const config = loadConfig();
+  const mapping = (config.mappings || []).find(m => m.id === mappingId);
+  if (!mapping) throw new Error(`Mapping not found: ${mappingId}`);
+  if (!mapping.tellerAccessToken || !mapping.tellerAccountId || !mapping.actualAccountId) {
+    throw new Error(`Mapping ${mappingId} is incomplete`);
+  }
+
+  let initOk = false;
+  try {
+    if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
+      throw new Error("Missing Actual Budget configuration (serverURL/password/syncId)");
+    }
+    await initActual(config);
+    initOk = true;
+
+    const startDate = getTransactionStartDate(config.sync.daysToSync);
+    const backupDir = path.join(__dirname, "transaction-data");
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+    const stats = await syncOneMapping({ mapping, tellerConfig: config.teller, startDate, backupDir });
+
+    updateMappingState(mappingId, {
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: "success",
+      lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
+      lastError: null,
+      needsReconnect: false,
+    });
+
+    saveSyncLog("SUCCESS", `Mapping sync: ${mapping.name}`, { mappingId, ...stats });
+    await actual.shutdown();
+    return stats;
+  } catch (error) {
+    if (initOk) { try { await actual.shutdown(); } catch (_) {} }
+    const isAuth = error?.name === "TellerAuthError";
+    updateMappingState(mappingId, {
+      lastSyncAt: new Date().toISOString(),
+      lastSyncStatus: isAuth ? "auth_error" : "error",
+      lastError: error?.message || String(error),
+      needsReconnect: isAuth,
+    });
+    saveSyncLog("ERROR", `Mapping sync failed: ${mapping.name}: ${error?.message}`, { mappingId, isAuth });
+    throw error;
+  }
+}
+
 // Main sync — iterates all mappings, isolating failures per mapping
 async function runSync() {
   console.log("🔄 Starting sync process...");
@@ -273,15 +353,20 @@ async function runSync() {
     const backupDir = path.join(__dirname, "transaction-data");
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
-    // Validate per-mapping fields
+    // Bucket mappings: valid / disabled / invalid
     const valid = [];
     const invalid = [];
+    const disabled = [];
     for (const m of config.mappings) {
+      if (m.disabled) {
+        disabled.push({ mappingId: m.id, name: m.name });
+        continue;
+      }
       if (!m.tellerAccessToken || !m.tellerAccountId || !m.actualAccountId) {
         invalid.push({ mappingId: m.id, name: m.name, reason: "missing fields" });
-      } else {
-        valid.push(m);
+        continue;
       }
+      valid.push(m);
     }
 
     const perMapping = [];
@@ -289,15 +374,30 @@ async function runSync() {
       try {
         const stats = await syncOneMapping({ mapping, tellerConfig: config.teller, startDate, backupDir });
         perMapping.push({ ok: true, ...stats });
+        updateMappingState(mapping.id, {
+          lastSyncAt: new Date().toISOString(),
+          lastSyncStatus: "success",
+          lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
+          lastError: null,
+          needsReconnect: false,
+        });
       } catch (err) {
+        const isAuth = err?.name === "TellerAuthError";
         const detail = {
           mappingId: mapping.id,
           name: mapping.name || mapping.id,
           message: err?.message || String(err),
           stack: err?.stack,
+          isAuth,
         };
         console.error(`❌ [${detail.name}] sync failed:`, err);
         perMapping.push({ ok: false, ...detail });
+        updateMappingState(mapping.id, {
+          lastSyncAt: new Date().toISOString(),
+          lastSyncStatus: isAuth ? "auth_error" : "error",
+          lastError: detail.message,
+          needsReconnect: isAuth,
+        });
       }
     }
 
@@ -313,17 +413,17 @@ async function runSync() {
     );
 
     if (totals.failed === 0 && invalid.length === 0) {
-      saveSyncLog("SUCCESS", "Sync completed for all mappings", { ...totals, perMapping });
+      saveSyncLog("SUCCESS", "Sync completed for all mappings", { ...totals, disabled, perMapping });
     } else {
       saveSyncLog(
         totals.succeeded > 0 ? "PARTIAL" : "ERROR",
-        `Completed with ${totals.failed} failed, ${invalid.length} skipped`,
-        { ...totals, invalid, perMapping }
+        `Completed with ${totals.failed} failed, ${invalid.length} invalid, ${disabled.length} disabled`,
+        { ...totals, invalid, disabled, perMapping }
       );
     }
 
     console.log("\n📊 Sync summary:");
-    console.log(`   Mappings: ${totals.succeeded}/${valid.length} succeeded, ${invalid.length} skipped`);
+    console.log(`   Mappings: ${totals.succeeded}/${valid.length} succeeded, ${invalid.length} invalid, ${disabled.length} disabled`);
     console.log(`   Fetched: ${totals.fetched}, Added: ${totals.added}, Updated: ${totals.updated}`);
 
     await actual.shutdown();
@@ -355,4 +455,4 @@ if (isMainModule) {
     .catch((error) => { console.error("\n❌ Sync script failed:"); console.error(error); process.exit(1); });
 }
 
-export { runSync, loadConfig, saveMappings, newMappingId };
+export { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, TellerAuthError };
