@@ -18,7 +18,7 @@
     "homelab"
   ],
   "dependencies": {
-    "@actual-app/api": "^25.11.0",
+    "@actual-app/api": "latest",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",

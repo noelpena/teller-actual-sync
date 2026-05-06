@@ -138,17 +138,19 @@ function transformTransactions(transactions) {
 
 // Initialize Actual Budget
 async function initActual(config) {
+  try { await actual.shutdown(); } catch (_) {}
+
   await actual.init({
     dataDir: config.actual.dataDir,
     serverURL: config.actual.serverURL,
     password: config.actual.password,
   });
 
-  if (config.actual.syncId) {
-    await actual.downloadBudget(config.actual.syncId);
-  } else {
-    await actual.downloadBudget();
+  if (!config.actual.syncId) {
+    throw new Error("Missing Actual Budget sync ID (config.actual.syncId)");
   }
+  await actual.downloadBudget(config.actual.syncId);
+  console.log(`✅ Budget downloaded: syncId=${config.actual.syncId}`);
 }
 
 // Save sync log
@@ -243,9 +245,17 @@ async function runSync() {
 
     await actual.shutdown();
   } catch (error) {
-    saveSyncLog("ERROR", error.message);
-    console.error("❌ Sync failed:", error);
-    process.exit(1);
+    const detail = {
+      message: error?.message || String(error),
+      stack: error?.stack,
+      name: error?.name,
+      cause: error?.cause ? String(error.cause) : undefined,
+    };
+    saveSyncLog("ERROR", detail.message, detail);
+    console.error("❌ Sync failed (full detail):");
+    console.error(error);
+    if (error?.cause) console.error("Caused by:", error.cause);
+    throw error;
   }
 }
 
