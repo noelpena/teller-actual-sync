@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import * as actual from "@actual-app/api";
 import cron from "node-cron";
 import multer from "multer";
-import { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId } from "./sync.js";
+import { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, persistLegacyMigrationIfNeeded } from "./sync.js";
 
 dotenv.config();
 
@@ -19,6 +19,8 @@ const __dirname = path.dirname(__filename);
 // Load config early to get APP_ID
 let config = {};
 try {
+  // One-shot: persist legacy → mappings migration so subsequent reads are stable
+  try { persistLegacyMigrationIfNeeded(); } catch (e) { console.warn("Legacy migration skipped:", e?.message); }
   config = loadConfig();
 } catch (e) {
   console.warn("⚠️  Could not load config.json, using env vars only");

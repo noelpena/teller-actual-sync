@@ -16,6 +16,13 @@ function newMappingId() {
   return "m_" + crypto.randomBytes(6).toString("hex");
 }
 
+// Deterministic id derived from a Teller account id. Used when migrating a legacy
+// single-account config so the synthesized mapping keeps a stable id across calls,
+// even before saveMappings has been called to persist it.
+function legacyMigrationId(tellerAccountId) {
+  return "m_legacy_" + crypto.createHash("sha1").update(String(tellerAccountId)).digest("hex").slice(0, 12);
+}
+
 // Load config from file or env vars; auto-migrate legacy single-account configs
 function loadConfig() {
   const configPath = path.join(__dirname, "config", "config.json");
@@ -40,7 +47,7 @@ function loadConfig() {
 
   if (mappings.length === 0 && legacyTellerToken && legacyTellerAccount && legacyActualAccount) {
     mappings.push({
-      id: newMappingId(),
+      id: legacyMigrationId(legacyTellerAccount), // deterministic so id is stable across calls
       name: "Default",
       tellerAccessToken: legacyTellerToken,
       tellerAccountId: legacyTellerAccount,
@@ -49,8 +56,8 @@ function loadConfig() {
     console.log("🔁 Migrated legacy single-account config to one mapping");
   }
 
-  // Ensure every mapping has an id
-  mappings = mappings.map((m) => ({ id: m.id || newMappingId(), ...m }));
+  // Ensure every mapping has an id (defensive — saveMappings always writes ids)
+  mappings = mappings.map((m) => ({ ...m, id: m.id || newMappingId() }));
 
   return {
     teller: {
@@ -598,4 +605,34 @@ if (isMainModule) {
     .catch((error) => { console.error("\n❌ Sync script failed:"); console.error(error); process.exit(1); });
 }
 
-export { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, TellerAuthError };
+// One-shot migration: if config.json still has legacy single-account fields and no
+// mappings array, persist the migrated mapping (with stable id) and drop the legacy
+// fields. Safe to call repeatedly — no-op when nothing to migrate.
+function persistLegacyMigrationIfNeeded() {
+  const configPath = path.join(__dirname, "config", "config.json");
+  if (!fs.existsSync(configPath)) return false;
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (_) { return false; }
+
+  const hasLegacy = !!(raw.teller?.accessToken || raw.teller?.accountId || raw.actual?.accountId);
+  const hasMappings = Array.isArray(raw.mappings) && raw.mappings.length > 0;
+
+  if (!hasLegacy) return false;          // nothing to do
+  if (hasMappings) {
+    // Already have mappings; just drop any leftover legacy fields
+    saveMappings(raw.mappings);
+    console.log("🧹 Cleaned legacy single-account fields from config.json");
+    return true;
+  }
+
+  // hasLegacy && !hasMappings → synthesize via loadConfig, then persist
+  const cfg = loadConfig();
+  if (cfg.mappings.length > 0) {
+    saveMappings(cfg.mappings);
+    console.log("✅ Persisted legacy → mappings migration to config.json");
+    return true;
+  }
+  return false;
+}
+
+export { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, TellerAuthError, persistLegacyMigrationIfNeeded };
