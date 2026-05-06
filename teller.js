@@ -793,6 +793,14 @@ app.post("/api/test/actual", async (req, res) => {
 // ===== TELLER API PROXY (catches remaining /api/* requests) =====
 // Custom middleware to add dynamic HTTPS agent with certificates
 app.use("/api", (req, res, next) => {
+  // Skip our own internal endpoints — they're registered after this middleware
+  // (so this proxy would otherwise forward them to api.teller.io and get 404s).
+  // /api/actual/* hits the Actual SDK; /api/teller/accounts is a custom server-side
+  // wrapper that sets up mTLS itself rather than going through the proxy.
+  if (req.path.startsWith("/actual/") || req.path === "/teller/accounts") {
+    return next();
+  }
+
   // Load certificates dynamically from config
   const config = loadConfig();
   const certPath = config.teller?.certPath || CERT;
