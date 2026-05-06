@@ -1139,7 +1139,111 @@ app.get("/admin", (req, res) => {
   if (!fs.existsSync(adminPath)) {
     return res.status(404).send("Admin page not found. Make sure admin.html exists in static/ folder.");
   }
-  res.sendFile(adminPath);
+  // Template TELLER_CONFIG so admin.js can launch Teller Connect inline
+  const currentConfig = loadConfig();
+  const currentAppId = currentConfig.teller?.appId || APP_ID || "";
+  const currentEnv = currentConfig.teller?.environment || currentConfig.teller?.env || ENV || "sandbox";
+  let html = fs.readFileSync(adminPath, "utf8");
+  html = html.replace("{{ app_id }}", currentAppId);
+  html = html.replace("{{ environment }}", currentEnv);
+  res.type("html").send(html);
+});
+
+// List accounts in the Actual budget (for mapping dropdowns)
+app.get("/api/actual/accounts", async (req, res) => {
+  try {
+    // Lazy-init if needed (covers cold starts where startup init was skipped)
+    const config = loadConfig();
+    if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
+      return res.status(400).json({ error: "Actual Budget is not configured" });
+    }
+    try {
+      await actual.init({
+        dataDir: config.actual.dataDir,
+        serverURL: config.actual.serverURL,
+        password: config.actual.password,
+      });
+      await actual.downloadBudget(config.actual.syncId);
+    } catch (e) {
+      // init may already have been done at startup; ignore "already initialized"
+      if (!String(e?.message || "").toLowerCase().includes("already")) throw e;
+    }
+    const accounts = await actual.getAccounts();
+    res.json({
+      accounts: accounts.map(a => ({
+        id: a.id,
+        name: a.name,
+        offbudget: !!a.offbudget,
+        closed: !!a.closed,
+      })),
+    });
+  } catch (error) {
+    console.error("Error listing Actual accounts:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List Teller accounts under a given access token (server-side, with mTLS)
+app.post("/api/teller/accounts", async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken || !accessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "Missing or invalid accessToken" });
+    }
+    const config = loadConfig();
+    const tellerEnv = config.teller.env;
+    const certPath = config.teller.certPath;
+    const certKeyPath = config.teller.certKeyPath;
+
+    let agent;
+    if (tellerEnv !== "sandbox" && certPath && certKeyPath) {
+      if (fs.existsSync(certPath) && fs.existsSync(certKeyPath)) {
+        agent = new https.Agent({
+          cert: fs.readFileSync(certPath),
+          key: fs.readFileSync(certKeyPath),
+        });
+      }
+    }
+
+    const data = await new Promise((resolve, reject) => {
+      const r = https.request({
+        hostname: "api.teller.io",
+        path: "/accounts",
+        method: "GET",
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${accessToken}:`).toString("base64")}`,
+          "Content-Type": "application/json",
+        },
+        agent,
+      }, (resp) => {
+        let body = "";
+        resp.on("data", c => body += c);
+        resp.on("end", () => {
+          if (resp.statusCode >= 200 && resp.statusCode < 300) {
+            try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+          } else {
+            reject(new Error(`Teller API ${resp.statusCode}: ${body}`));
+          }
+        });
+      });
+      r.on("error", reject);
+      r.end();
+    });
+
+    res.json({
+      accounts: (data || []).map(a => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        subtype: a.subtype,
+        last_four: a.last_four,
+        institution: a.institution?.name || a.institution?.id || null,
+      })),
+    });
+  } catch (error) {
+    console.error("Error listing Teller accounts:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Certificate upload endpoint

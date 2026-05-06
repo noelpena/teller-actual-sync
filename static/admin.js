@@ -536,5 +536,179 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// ===== Connect Another Bank (inline Teller Connect + account picker) =====
+
+let _newBankToken = null;
+let _newBankAccounts = [];
+let _actualAccountsCache = null;
+
+async function fetchActualAccounts() {
+  if (_actualAccountsCache) return _actualAccountsCache;
+  const res = await fetch('/api/actual/accounts');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load Actual accounts');
+  _actualAccountsCache = data.accounts || [];
+  return _actualAccountsCache;
+}
+
+async function fetchTellerAccountsForToken(accessToken) {
+  const res = await fetch('/api/teller/accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accessToken }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to load Teller accounts');
+  return data.accounts || [];
+}
+
+function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMappings) {
+  const list = document.getElementById('newBankAccountsList');
+  const existingPairs = new Set(
+    (existingMappings || []).map(m => `${m.tellerAccountId}|${m.actualAccountId}`)
+  );
+
+  const actualOptions = actualAccounts
+    .filter(a => !a.closed)
+    .map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}${a.offbudget ? ' (off-budget)' : ''}</option>`)
+    .join('');
+
+  if (tellerAccounts.length === 0) {
+    list.innerHTML = '<div class="text-sm text-gray-500">No accounts returned from Teller for this token.</div>';
+    return;
+  }
+
+  list.innerHTML = tellerAccounts.map(t => {
+    const subtitle = [t.institution, t.type, t.subtype, t.last_four ? `••${t.last_four}` : null]
+      .filter(Boolean).join(' · ');
+    return `
+      <div class="border rounded-md p-3 grid grid-cols-1 md:grid-cols-12 gap-2 items-center" data-teller-id="${escapeHtml(t.id)}">
+        <div class="md:col-span-5">
+          <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
+          <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+          <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
+        </div>
+        <div class="md:col-span-2">
+          <input type="text" class="map-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
+            placeholder="display name" value="${escapeHtml(t.name || '')}">
+        </div>
+        <div class="md:col-span-5">
+          <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="">— skip —</option>
+            ${actualOptions}
+          </select>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function showNewBankPanel(institutionName) {
+  const panel = document.getElementById('newBankAccountsPanel');
+  const title = document.getElementById('newBankAccountsTitle');
+  panel.classList.remove('hidden');
+  title.textContent = institutionName ? `Map accounts from ${institutionName}` : 'Map accounts';
+}
+
+function hideNewBankPanel() {
+  const panel = document.getElementById('newBankAccountsPanel');
+  panel.classList.add('hidden');
+  document.getElementById('newBankAccountsList').innerHTML = '';
+  _newBankToken = null;
+  _newBankAccounts = [];
+}
+
+async function handleConnectAnotherBank() {
+  if (!window.TellerConnect || !window.TELLER_CONFIG?.applicationId) {
+    showToast('Teller Connect not loaded. Refresh the page.', 'error');
+    return;
+  }
+  if (!window.TELLER_CONFIG.applicationId.startsWith('app_')) {
+    showToast('Teller App ID is not configured. Set it under /setup first.', 'error');
+    return;
+  }
+
+  // Pre-warm Actual accounts so the dropdown is populated quickly
+  let actualAccounts = [];
+  try { actualAccounts = await fetchActualAccounts(); }
+  catch (e) {
+    showToast(`Could not load Actual accounts: ${e.message}`, 'error');
+    return;
+  }
+
+  const tc = window.TellerConnect.setup({
+    applicationId: window.TELLER_CONFIG.applicationId,
+    environment: window.TELLER_CONFIG.environment || 'sandbox',
+    selectAccount: 'multiple',
+    onSuccess: async (enrollment) => {
+      try {
+        _newBankToken = enrollment.accessToken;
+        const tellerAccounts = await fetchTellerAccountsForToken(_newBankToken);
+        _newBankAccounts = tellerAccounts;
+
+        const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
+        showNewBankPanel(tellerAccounts[0]?.institution);
+        renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existing);
+      } catch (err) {
+        showToast(`Failed to load accounts: ${err.message}`, 'error');
+      }
+    },
+    onFailure: (err) => {
+      console.error('Teller Connect failed:', err);
+    },
+  });
+  tc.open();
+}
+
+async function handleSaveNewBankMappings() {
+  if (!_newBankToken || _newBankAccounts.length === 0) {
+    showToast('No bank connection to save.', 'error');
+    return;
+  }
+  const rows = document.querySelectorAll('#newBankAccountsList [data-teller-id]');
+  const toCreate = [];
+  rows.forEach(row => {
+    const tellerAccountId = row.dataset.tellerId;
+    const actualAccountId = row.querySelector('.map-actual').value;
+    const name = row.querySelector('.map-name').value || '';
+    if (actualAccountId) {
+      toCreate.push({ tellerAccountId, actualAccountId, name, tellerAccessToken: _newBankToken });
+    }
+  });
+
+  if (toCreate.length === 0) {
+    showToast('No accounts selected. Pick at least one Actual account.', 'error');
+    return;
+  }
+
+  let created = 0;
+  let failed = 0;
+  for (const m of toCreate) {
+    try {
+      const res = await fetch('/api/mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(m),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed');
+      created++;
+    } catch (err) {
+      console.error('Failed to save mapping:', m, err);
+      failed++;
+    }
+  }
+
+  if (created > 0) showToast(`Added ${created} mapping${created === 1 ? '' : 's'}${failed ? ` (${failed} failed)` : ''}`, failed ? 'error' : 'success');
+  else showToast(`Failed to save mappings`, 'error');
+
+  hideNewBankPanel();
+  loadMappings();
+}
+
+document.getElementById('connectAnotherBankBtn')?.addEventListener('click', handleConnectAnotherBank);
+document.getElementById('newBankCancelBtn')?.addEventListener('click', hideNewBankPanel);
+document.getElementById('newBankSaveBtn')?.addEventListener('click', handleSaveNewBankMappings);
+
 // Initial load
 loadDashboard();
