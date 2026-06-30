@@ -1,13 +1,10 @@
-version: '3.8'
-
 services:
   teller-actual-sync:
-    # Option 1: Use pre-built image from Docker Hub (recommended)
-    # Uncomment the line below and comment out 'build: .' to use Docker Hub image
+    # Option 1: Use the pre-built image from Docker Hub (recommended)
     image: noelpena/teller-actual-sync:latest
 
     # Option 2: Build locally from source
-    # Comment out this line if using Docker Hub image above
+    # Comment out the 'image:' line above and uncomment the line below.
     # build: .
 
     container_name: teller-actual-sync
@@ -24,41 +21,51 @@ services:
       # mTLS certificates (writable for admin upload)
       - ./certs:/app/certs
     environment:
-      # Teller Configuration
-      - APP_ID=${APP_ID}
-      - ENV=${ENV:-development}
-      - TELLER_ACCESS_TOKEN=${TELLER_ACCESS_TOKEN}
-      - TELLER_ACCOUNT_ID=${TELLER_ACCOUNT_ID}
-      
-      # Actual Budget Configuration
-      - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL}
-      - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
-      - ACTUAL_SYNC_ID=${ACTUAL_SYNC_ID}
-      - ACTUAL_ACCOUNT_ID=${ACTUAL_ACCOUNT_ID}
-      - ACTUAL_DATA_DIR=/app/actual-data
-      
-      # Sync Configuration
-      - DAYS_TO_SYNC=${DAYS_TO_SYNC:-7}
-      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 8 * * *}
-      
-      # SSL Certificates (optional, for production Teller)
-      - CERT=${CERT}
-      - CERT_KEY=${CERT_KEY}
-      
-      # Node Environment
-      - NODE_ENV=production
+      # Timezone for the cron schedule (so "8 AM" = your local time, not UTC)
       - TZ=${TZ:-America/New_York}
+      - NODE_ENV=production
+      #
+      # OPTIONAL: everything below is normally set through the in-app setup
+      # wizard (saved to config/config.json, which takes priority). Only
+      # uncomment these if you prefer to configure via a .env file and skip
+      # the wizard. Leaving them commented avoids "variable not set" warnings.
+      #
+      # - APP_ID=${APP_ID}
+      # - ENV=${ENV:-development}
+      # - TELLER_ACCESS_TOKEN=${TELLER_ACCESS_TOKEN}
+      # - TELLER_ACCOUNT_ID=${TELLER_ACCOUNT_ID}
+      # - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL}
+      # - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
+      # - ACTUAL_SYNC_ID=${ACTUAL_SYNC_ID}
+      # - ACTUAL_ACCOUNT_ID=${ACTUAL_ACCOUNT_ID}
+      # - DAYS_TO_SYNC=${DAYS_TO_SYNC:-7}
+      # - CRON_SCHEDULE=${CRON_SCHEDULE:-0 8 * * *}
+      # - CERT=${CERT}
+      # - CERT_KEY=${CERT_KEY}
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8001/ping"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    labels:
-      # CasaOS labels
-      - "casaos.name=Teller-Actual Sync"
-      - "casaos.category=Finance"
-      - "casaos.description=Automated bank transaction sync to Actual Budget"
-      - "casaos.icon=https://actual-budget.com/img/favicon.png"
-      - "casaos.index=/"
-      - "casaos.port_map=8001"
+
+# CasaOS app metadata: makes the Web UI port + icon auto-configure on import.
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: teller-actual-sync
+  author: noelpena
+  developer: noelpena
+  category: Finance
+  scheme: http
+  port_map: "8001"
+  webui_port: 8001
+  index: /
+  icon: https://actual-budget.com/img/favicon.png
+  title:
+    en_us: Teller-Actual Sync
+  tagline:
+    en_us: Sync bank transactions to Actual Budget with Teller
+  description:
+    en_us: Automated bank transaction sync from Teller to Actual Budget.
