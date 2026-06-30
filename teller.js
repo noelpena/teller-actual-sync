@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import * as actual from "@actual-app/api";
 import cron from "node-cron";
 import multer from "multer";
-import { runSync, loadConfig } from "./sync.js";
+import { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, persistLegacyMigrationIfNeeded } from "./sync.js";
 
 dotenv.config();
 
@@ -19,6 +19,8 @@ const __dirname = path.dirname(__filename);
 // Load config early to get APP_ID
 let config = {};
 try {
+  // One-shot: persist legacy → mappings migration so subsequent reads are stable
+  try { persistLegacyMigrationIfNeeded(); } catch (e) { console.warn("Legacy migration skipped:", e?.message); }
   config = loadConfig();
 } catch (e) {
   console.warn("⚠️  Could not load config.json, using env vars only");
@@ -55,31 +57,34 @@ app.use(cors(), express.json({ limit: '50mb' }));
 // Helper function to check configuration completeness
 function checkConfigStatus() {
   const config = loadConfig();
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  // Check if Teller config exists AND has valid (non-placeholder) values
-  const hasTellerConfig = Boolean(
-    config.teller?.accessToken &&
-    config.teller?.accountId &&
-    config.teller.accessToken.startsWith('token_') &&
-    config.teller.accountId.startsWith('acc_')
-  );
-
-  // Check if Actual Budget config exists AND has valid (non-placeholder) values
-  const hasActualConfig = Boolean(
+  // Actual server-level config (shared across all mappings)
+  const hasActualServerConfig = Boolean(
     config.actual?.serverURL &&
     config.actual?.password &&
     config.actual?.syncId &&
-    config.actual?.accountId &&
     !config.actual.serverURL.includes('your-actual-server') &&
     !config.actual.password.includes('your_actual_password') &&
-    config.actual.syncId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) &&
-    config.actual.accountId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    config.actual.syncId.match(UUID_RE)
   );
+
+  // At least one fully-formed mapping
+  const validMappings = (config.mappings || []).filter(m =>
+    m.tellerAccessToken && m.tellerAccessToken.startsWith('token_') &&
+    m.tellerAccountId && m.tellerAccountId.startsWith('acc_') &&
+    m.actualAccountId && UUID_RE.test(m.actualAccountId)
+  );
+
+  const hasTellerConfig = validMappings.length > 0;
+  const hasActualConfig = hasActualServerConfig;
 
   return {
     hasTellerConfig,
     hasActualConfig,
-    isComplete: hasTellerConfig && hasActualConfig
+    isComplete: hasTellerConfig && hasActualConfig,
+    mappingCount: (config.mappings || []).length,
+    validMappingCount: validMappings.length
   };
 }
 
@@ -279,6 +284,211 @@ app.get("/api/config/status", (req, res) => {
   try {
     const status = checkConfigStatus();
     res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== Account mappings API =====
+// Each mapping = one Teller account paired with one Actual account.
+// A token from a single Teller Connect flow can be reused across multiple mappings
+// at the same institution.
+
+app.get("/api/mappings", (req, res) => {
+  try {
+    const config = loadConfig();
+    // Mask access tokens in response
+    const safe = (config.mappings || []).map(m => ({
+      id: m.id,
+      name: m.name || "",
+      tellerAccountId: m.tellerAccountId,
+      actualAccountId: m.actualAccountId,
+      tellerAccessTokenMasked: m.tellerAccessToken
+        ? `${m.tellerAccessToken.substring(0, 10)}...`
+        : null,
+      disabled: !!m.disabled,
+      needsReconnect: !!m.needsReconnect,
+      pendingReconcile: !!m.pendingReconcile,
+      lastSyncAt: m.lastSyncAt || null,
+      lastSyncStatus: m.lastSyncStatus || null,
+      lastSyncStats: m.lastSyncStats || null,
+      lastError: m.lastError || null,
+      lastReconcileAt: m.lastReconcileAt || null,
+      lastReconcileDelta: m.lastReconcileDelta == null ? null : m.lastReconcileDelta,
+    }));
+    res.json({ mappings: safe });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Edit a mapping (name, actualAccountId, disabled). For tellerAccountId/token rotation,
+// use the dedicated POST /api/mappings/rotate-token endpoint instead.
+app.patch("/api/mappings/:id", (req, res) => {
+  try {
+    const id = req.params.id;
+    const { name, actualAccountId, disabled } = req.body;
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    const config = loadConfig();
+    const mappings = config.mappings.slice();
+    const idx = mappings.findIndex(m => m.id === id);
+    if (idx === -1) return res.status(404).json({ error: "Mapping not found" });
+
+    const patch = {};
+    if (name !== undefined) patch.name = String(name);
+    if (typeof disabled === "boolean") patch.disabled = disabled;
+    if (actualAccountId !== undefined) {
+      if (!UUID_RE.test(actualAccountId)) {
+        return res.status(400).json({ error: "actualAccountId must be a UUID" });
+      }
+      patch.actualAccountId = actualAccountId;
+    }
+
+    mappings[idx] = { ...mappings[idx], ...patch };
+    saveMappings(mappings);
+    res.json({ success: true, mapping: { id: mappings[idx].id, ...patch } });
+  } catch (error) {
+    console.error("Error patching mapping:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trigger reconcile on next sync (and immediately run it)
+app.post("/api/mappings/:id/reconcile", async (req, res) => {
+  try {
+    updateMappingState(req.params.id, { pendingReconcile: true });
+    const stats = await runSyncForMapping(req.params.id);
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error?.message || String(error),
+    });
+  }
+});
+
+// Trigger a sync for a single mapping
+app.post("/api/mappings/:id/sync", async (req, res) => {
+  try {
+    const stats = await runSyncForMapping(req.params.id);
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error?.message || String(error),
+      isAuth: error?.name === "TellerAuthError",
+    });
+  }
+});
+
+// Rotate the access token across all mappings for a given Teller account ID set.
+// Used after re-running Teller Connect for a bank that was previously authorized:
+// - body.newAccessToken: the freshly minted token
+// - body.tellerAccountIds: list of acc_ ids that this token covers
+// All existing mappings whose tellerAccountId is in that list get their token replaced
+// and have needsReconnect cleared.
+app.post("/api/mappings/rotate-token", (req, res) => {
+  try {
+    const { newAccessToken, tellerAccountIds } = req.body;
+    if (!newAccessToken || !newAccessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "Missing/invalid newAccessToken" });
+    }
+    if (!Array.isArray(tellerAccountIds) || tellerAccountIds.length === 0) {
+      return res.status(400).json({ error: "Missing tellerAccountIds[]" });
+    }
+
+    const config = loadConfig();
+    const idSet = new Set(tellerAccountIds);
+    let rotated = 0;
+    const mappings = config.mappings.map(m => {
+      if (idSet.has(m.tellerAccountId)) {
+        rotated++;
+        return { ...m, tellerAccessToken: newAccessToken, needsReconnect: false, lastError: null };
+      }
+      return m;
+    });
+    saveMappings(mappings);
+    res.json({ success: true, rotated });
+  } catch (error) {
+    console.error("Error rotating token:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create or update a mapping. If body.id is set and matches an existing mapping, update.
+// Otherwise create a new one.
+app.post("/api/mappings", (req, res) => {
+  try {
+    const { id, name, tellerAccessToken, tellerAccountId, actualAccountId, pendingReconcile } = req.body;
+
+    if (!tellerAccessToken || !tellerAccountId || !actualAccountId) {
+      return res.status(400).json({
+        error: "Missing required fields: tellerAccessToken, tellerAccountId, actualAccountId"
+      });
+    }
+    if (!tellerAccessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "tellerAccessToken must start with 'token_'" });
+    }
+    if (!tellerAccountId.startsWith("acc_")) {
+      return res.status(400).json({ error: "tellerAccountId must start with 'acc_'" });
+    }
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(actualAccountId)) {
+      return res.status(400).json({ error: "actualAccountId must be a UUID" });
+    }
+
+    const config = loadConfig();
+    const mappings = config.mappings.slice();
+
+    if (id) {
+      const idx = mappings.findIndex(m => m.id === id);
+      if (idx === -1) return res.status(404).json({ error: "Mapping not found" });
+      mappings[idx] = {
+        ...mappings[idx],
+        name: name || mappings[idx].name,
+        tellerAccessToken,
+        tellerAccountId,
+        actualAccountId,
+        ...(typeof pendingReconcile === "boolean" ? { pendingReconcile } : {}),
+      };
+    } else {
+      // Prevent duplicate (same tellerAccountId + actualAccountId)
+      const dup = mappings.find(m =>
+        m.tellerAccountId === tellerAccountId && m.actualAccountId === actualAccountId
+      );
+      if (dup) {
+        return res.status(409).json({ error: "Mapping already exists", id: dup.id });
+      }
+      mappings.push({
+        id: newMappingId(),
+        name: name || "Unnamed",
+        tellerAccessToken,
+        tellerAccountId,
+        actualAccountId,
+        pendingReconcile: !!pendingReconcile,
+      });
+    }
+
+    saveMappings(mappings);
+    res.json({ success: true, count: mappings.length });
+  } catch (error) {
+    console.error("Error saving mapping:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/mappings/:id", (req, res) => {
+  try {
+    const id = req.params.id;
+    const config = loadConfig();
+    const before = config.mappings.length;
+    const mappings = config.mappings.filter(m => m.id !== id);
+    if (mappings.length === before) {
+      return res.status(404).json({ error: "Mapping not found" });
+    }
+    saveMappings(mappings);
+    res.json({ success: true, removed: id, remaining: mappings.length });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -583,6 +793,14 @@ app.post("/api/test/actual", async (req, res) => {
 // ===== TELLER API PROXY (catches remaining /api/* requests) =====
 // Custom middleware to add dynamic HTTPS agent with certificates
 app.use("/api", (req, res, next) => {
+  // Skip our own internal endpoints — they're registered after this middleware
+  // (so this proxy would otherwise forward them to api.teller.io and get 404s).
+  // /api/actual/* hits the Actual SDK; /api/teller/accounts is a custom server-side
+  // wrapper that sets up mTLS itself rather than going through the proxy.
+  if (req.path.startsWith("/actual/") || req.path === "/teller/accounts") {
+    return next();
+  }
+
   // Load certificates dynamically from config
   const config = loadConfig();
   const certPath = config.teller?.certPath || CERT;
@@ -1036,7 +1254,162 @@ app.get("/admin", (req, res) => {
   if (!fs.existsSync(adminPath)) {
     return res.status(404).send("Admin page not found. Make sure admin.html exists in static/ folder.");
   }
-  res.sendFile(adminPath);
+  // Template TELLER_CONFIG so admin.js can launch Teller Connect inline
+  const currentConfig = loadConfig();
+  const currentAppId = currentConfig.teller?.appId || APP_ID || "";
+  const currentEnv = currentConfig.teller?.environment || currentConfig.teller?.env || ENV || "sandbox";
+  let html = fs.readFileSync(adminPath, "utf8");
+  html = html.replace("{{ app_id }}", currentAppId);
+  html = html.replace("{{ environment }}", currentEnv);
+  res.type("html").send(html);
+});
+
+// Coerce any thrown value into a string message — SDK errors sometimes have non-string
+// .message fields, which previously surfaced as "[object Object]" in the UI.
+function errMsg(err) {
+  if (err == null) return "unknown error";
+  if (typeof err === "string") return err;
+  if (typeof err.message === "string") return err.message;
+  if (err.message && typeof err.message === "object") {
+    try { return JSON.stringify(err.message); } catch (_) { return String(err.message); }
+  }
+  try { return JSON.stringify(err); } catch (_) { return String(err); }
+}
+
+// Helper: ensure Actual SDK is initialized + budget downloaded.
+// Used by both list (GET) and create (POST) endpoints. Idempotent — safe to call repeatedly.
+// runSync() shuts the SDK down at the end of every sync, so this often needs to re-init.
+async function ensureActualReady() {
+  const config = loadConfig();
+  if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
+    throw new Error("Actual Budget is not configured (serverURL/password/syncId)");
+  }
+  try {
+    await actual.init({
+      dataDir: config.actual.dataDir,
+      serverURL: config.actual.serverURL,
+      password: config.actual.password,
+    });
+  } catch (e) {
+    const msg = errMsg(e).toLowerCase();
+    if (!msg.includes("already")) {
+      console.error("actual.init failed:", e);
+      throw new Error("Actual init failed: " + errMsg(e));
+    }
+  }
+  try {
+    await actual.downloadBudget(config.actual.syncId);
+  } catch (e) {
+    const msg = errMsg(e).toLowerCase();
+    if (!msg.includes("already")) {
+      console.error("actual.downloadBudget failed:", e);
+      throw new Error("Actual downloadBudget failed: " + errMsg(e));
+    }
+  }
+}
+
+// Create a new account in Actual (called from the Connect Another Bank flow)
+app.post("/api/actual/accounts", async (req, res) => {
+  try {
+    const { name, offbudget, initialBalance } = req.body;
+    if (!name || typeof name !== "string") {
+      return res.status(400).json({ error: "name is required" });
+    }
+    const balance = Number.isFinite(Number(initialBalance)) ? Number(initialBalance) : 0;
+
+    await ensureActualReady();
+    // Actual SDK signature: createAccount({ name, offbudget }, initialBalanceCents)
+    const id = await actual.createAccount(
+      { name: name.trim(), offbudget: !!offbudget },
+      Math.round(balance * 100)
+    );
+    res.json({ success: true, id });
+  } catch (error) {
+    console.error("Error creating Actual account:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
+
+// List accounts in the Actual budget (for mapping dropdowns)
+app.get("/api/actual/accounts", async (req, res) => {
+  try {
+    await ensureActualReady();
+    const accounts = await actual.getAccounts();
+    res.json({
+      accounts: accounts.map(a => ({
+        id: a.id,
+        name: a.name,
+        offbudget: !!a.offbudget,
+        closed: !!a.closed,
+      })),
+    });
+  } catch (error) {
+    console.error("Error listing Actual accounts:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
+
+// List Teller accounts under a given access token (server-side, with mTLS)
+app.post("/api/teller/accounts", async (req, res) => {
+  try {
+    const { accessToken } = req.body;
+    if (!accessToken || !accessToken.startsWith("token_")) {
+      return res.status(400).json({ error: "Missing or invalid accessToken" });
+    }
+    const config = loadConfig();
+    const tellerEnv = config.teller.env;
+    const certPath = config.teller.certPath;
+    const certKeyPath = config.teller.certKeyPath;
+
+    let agent;
+    if (tellerEnv !== "sandbox" && certPath && certKeyPath) {
+      if (fs.existsSync(certPath) && fs.existsSync(certKeyPath)) {
+        agent = new https.Agent({
+          cert: fs.readFileSync(certPath),
+          key: fs.readFileSync(certKeyPath),
+        });
+      }
+    }
+
+    const data = await new Promise((resolve, reject) => {
+      const r = https.request({
+        hostname: "api.teller.io",
+        path: "/accounts",
+        method: "GET",
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${accessToken}:`).toString("base64")}`,
+          "Content-Type": "application/json",
+        },
+        agent,
+      }, (resp) => {
+        let body = "";
+        resp.on("data", c => body += c);
+        resp.on("end", () => {
+          if (resp.statusCode >= 200 && resp.statusCode < 300) {
+            try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+          } else {
+            reject(new Error(`Teller API ${resp.statusCode}: ${body}`));
+          }
+        });
+      });
+      r.on("error", reject);
+      r.end();
+    });
+
+    res.json({
+      accounts: (data || []).map(a => ({
+        id: a.id,
+        name: a.name,
+        type: a.type,
+        subtype: a.subtype,
+        last_four: a.last_four,
+        institution: a.institution?.name || a.institution?.id || null,
+      })),
+    });
+  } catch (error) {
+    console.error("Error listing Teller accounts:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Certificate upload endpoint
