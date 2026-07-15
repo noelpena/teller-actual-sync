@@ -2,9 +2,14 @@ import dotenv from "dotenv";
 import * as actual from "@actual-app/api";
 import fs from "fs";
 import path from "path";
-import https from "https";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import {
+  QuilttAuthError,
+  connectionNeedsRepair,
+  fetchAccount,
+  fetchTransactions,
+} from "./quiltt.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,14 +21,8 @@ function newMappingId() {
   return "m_" + crypto.randomBytes(6).toString("hex");
 }
 
-// Deterministic id derived from a Teller account id. Used when migrating a legacy
-// single-account config so the synthesized mapping keeps a stable id across calls,
-// even before saveMappings has been called to persist it.
-function legacyMigrationId(tellerAccountId) {
-  return "m_legacy_" + crypto.createHash("sha1").update(String(tellerAccountId)).digest("hex").slice(0, 12);
-}
-
-// Load config from file or env vars; auto-migrate legacy single-account configs
+// Load config from file or env vars.
+// Each mapping = one Quiltt account paired with one Actual account.
 function loadConfig() {
   const configPath = path.join(__dirname, "config", "config.json");
 
@@ -37,44 +36,28 @@ function loadConfig() {
     }
   }
 
-  // Build mappings from new schema OR migrate from legacy single-account config
-  let mappings = Array.isArray(fileConfig.mappings) ? fileConfig.mappings.slice() : [];
-
-  // Legacy single-account: synthesize one mapping if mappings empty but legacy fields present
-  const legacyTellerToken = fileConfig.teller?.accessToken || process.env.TELLER_ACCESS_TOKEN;
-  const legacyTellerAccount = fileConfig.teller?.accountId || process.env.TELLER_ACCOUNT_ID;
-  const legacyActualAccount = fileConfig.actual?.accountId || process.env.ACTUAL_ACCOUNT_ID;
-
-  if (mappings.length === 0 && legacyTellerToken && legacyTellerAccount && legacyActualAccount) {
-    mappings.push({
-      id: legacyMigrationId(legacyTellerAccount), // deterministic so id is stable across calls
-      name: "Default",
-      tellerAccessToken: legacyTellerToken,
-      tellerAccountId: legacyTellerAccount,
-      actualAccountId: legacyActualAccount,
-    });
-    console.log("🔁 Migrated legacy single-account config to one mapping");
+  if (fileConfig.teller) {
+    console.warn(
+      "⚠️  Legacy Teller config detected. Teller's API service has been discontinued — " +
+      "reconfigure with Quiltt via the /connect page. Old Teller mappings will be skipped."
+    );
   }
 
+  let mappings = Array.isArray(fileConfig.mappings) ? fileConfig.mappings.slice() : [];
   // Ensure every mapping has an id (defensive — saveMappings always writes ids)
   mappings = mappings.map((m) => ({ ...m, id: m.id || newMappingId() }));
 
   return {
-    teller: {
-      appId: fileConfig.teller?.appId || process.env.APP_ID,
-      env: fileConfig.teller?.env || fileConfig.teller?.environment || process.env.ENV || "sandbox",
-      certPath: fileConfig.teller?.certPath || process.env.CERT,
-      certKeyPath: fileConfig.teller?.certKeyPath || process.env.CERT_KEY,
-      // Legacy fields preserved for read-back / save-back round trips
-      accessToken: legacyTellerToken,
-      accountId: legacyTellerAccount,
+    quiltt: {
+      apiSecret: fileConfig.quiltt?.apiSecret || process.env.QUILTT_API_SECRET,
+      connectorId: fileConfig.quiltt?.connectorId || process.env.QUILTT_CONNECTOR_ID,
+      profileId: fileConfig.quiltt?.profileId || process.env.QUILTT_PROFILE_ID,
     },
     actual: {
       dataDir: fileConfig.actual?.dataDir || process.env.ACTUAL_DATA_DIR || "/app/actual-data",
       serverURL: fileConfig.actual?.serverURL || process.env.ACTUAL_SERVER_URL,
       password: fileConfig.actual?.password || process.env.ACTUAL_PASSWORD,
       syncId: fileConfig.actual?.syncId || process.env.ACTUAL_SYNC_ID,
-      accountId: legacyActualAccount,
     },
     mappings,
     sync: {
@@ -98,8 +81,8 @@ function saveMappings(mappings) {
   const cleaned = mappings.map((m) => ({
     id: m.id || newMappingId(),
     name: m.name || "Unnamed",
-    tellerAccessToken: m.tellerAccessToken,
-    tellerAccountId: m.tellerAccountId,
+    connectionId: m.connectionId || null,
+    quilttAccountId: m.quilttAccountId,
     actualAccountId: m.actualAccountId,
     disabled: !!m.disabled,
     needsReconnect: !!m.needsReconnect,
@@ -113,20 +96,31 @@ function saveMappings(mappings) {
     lastReconcileDelta: m.lastReconcileDelta == null ? null : m.lastReconcileDelta,
   }));
 
-  const next = { ...existing, mappings: cleaned };
-
-  // If legacy single-account fields still exist, drop them — mappings is the source of truth now
-  if (next.teller) {
-    delete next.teller.accessToken;
-    delete next.teller.accountId;
-    delete next.teller.userId;
-  }
-  if (next.actual) {
-    delete next.actual.accountId;
-  }
-
-  fs.writeFileSync(configPath, JSON.stringify(next, null, 2));
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, mappings: cleaned }, null, 2));
   return cleaned;
+}
+
+// Persist Quiltt settings (apiSecret/connectorId/profileId), preserving everything else.
+// Pass only the keys you want to change.
+function saveQuilttConfig(patch) {
+  const configDir = path.join(__dirname, "config");
+  const configPath = path.join(configDir, "config.json");
+  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+
+  let existing = {};
+  if (fs.existsSync(configPath)) {
+    try { existing = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (_) {}
+  }
+
+  const quiltt = { ...existing.quiltt };
+  for (const key of ["apiSecret", "connectorId", "profileId"]) {
+    if (patch[key] !== undefined && patch[key] !== null && patch[key] !== "") {
+      quiltt[key] = patch[key];
+    }
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify({ ...existing, quiltt }, null, 2));
+  return quiltt;
 }
 
 // Update sync state for a single mapping (atomic read-modify-write of config.json)
@@ -150,128 +144,30 @@ function getTransactionStartDate(daysAgo) {
   return `${year}-${month}-${day}`;
 }
 
-// Build an HTTPS agent for Teller (mTLS) if certs are available + env != sandbox
-function buildTellerAgent(tellerConfig) {
-  const { env, certPath, certKeyPath } = tellerConfig;
-  if (env === "sandbox") return undefined;
-  if (!certPath || !certKeyPath) return undefined;
-  if (!fs.existsSync(certPath) || !fs.existsSync(certKeyPath)) {
-    console.warn(`⚠️  Certificate files not found: ${certPath}, ${certKeyPath}`);
-    return undefined;
-  }
-  return new https.Agent({
-    cert: fs.readFileSync(certPath),
-    key: fs.readFileSync(certKeyPath),
-  });
+// Fetch the current balance from Quiltt for a single mapping. Returns a Number (in dollars) or null.
+// Quiltt normalizes balance signs across providers: liability accounts (credit cards, loans)
+// report a NEGATIVE balance when money is owed — which matches Actual's convention directly.
+async function fetchQuilttBalance({ mapping, quilttConfig }) {
+  const account = await fetchAccount({ quiltt: quilttConfig, accountId: mapping.quilttAccountId });
+  const v = account.balance?.current ?? account.balance?.available;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-// Custom error type so callers can detect "Teller said this token is no good, reconnect"
-class TellerAuthError extends Error {
-  constructor(message, statusCode) {
-    super(message);
-    this.name = "TellerAuthError";
-    this.statusCode = statusCode;
-  }
-}
-
-// Fetch the ledger balance from Teller for a single mapping. Returns a Number (in dollars) or null.
-function fetchTellerBalance({ mapping, tellerConfig }) {
-  const agent = buildTellerAgent(tellerConfig);
-
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: "api.teller.io",
-      path: `/accounts/${mapping.tellerAccountId}/balances`,
-      method: "GET",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${mapping.tellerAccessToken}:`).toString("base64")}`,
-        "Content-Type": "application/json",
-      },
-      agent,
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", () => {
-        if (res.statusCode === 401 || res.statusCode === 403) {
-          return reject(new TellerAuthError(
-            `Teller balance auth error ${res.statusCode}`, res.statusCode
-          ));
-        }
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          return reject(new Error(`Teller balance API ${res.statusCode}: ${data}`));
-        }
-        try {
-          const parsed = JSON.parse(data);
-          // Teller returns ledger as a string. Prefer ledger (posted) over available (post-pending).
-          const v = parseFloat(parsed.ledger ?? parsed.available);
-          resolve(Number.isFinite(v) ? v : null);
-        } catch (err) {
-          reject(new Error(`Failed to parse Teller balance response: ${err.message}`));
-        }
-      });
-    });
-
-    req.on("error", (err) => reject(new Error(`Teller balance request failed: ${err.message}`)));
-    req.end();
-  });
-}
-
-// Fetch transactions from Teller for a single mapping
-function fetchTellerTransactions({ mapping, tellerConfig, startDate }) {
-  const agent = buildTellerAgent(tellerConfig);
-
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: "api.teller.io",
-      path: `/accounts/${mapping.tellerAccountId}/transactions?start_date=${startDate}`,
-      method: "GET",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${mapping.tellerAccessToken}:`).toString("base64")}`,
-        "Content-Type": "application/json",
-      },
-      agent,
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try { resolve(JSON.parse(data)); }
-          catch (err) { reject(new Error(`Failed to parse Teller response: ${err.message}`)); }
-        } else if (res.statusCode === 401 || res.statusCode === 403) {
-          reject(new TellerAuthError(
-            `Teller auth error ${res.statusCode}: token may be expired or revoked. Reconnect this bank.`,
-            res.statusCode
-          ));
-        } else {
-          reject(new Error(`Teller API error: ${res.statusCode} ${res.statusMessage}\nDetails: ${data}`));
-        }
-      });
-    });
-
-    req.on("error", (err) => reject(new Error(`Teller request failed: ${err.message}`)));
-    req.end();
-  });
-}
-
-// Transform Teller transactions to Actual format
+// Transform Quiltt transactions to Actual format.
+// Quiltt amounts are signed floats: positive = credit (inflow), negative = debit (outflow) —
+// the same convention Actual uses, so no sign flip is needed.
+// Quiltt transaction ids are stable, so imported_id gives us real dedup on re-imports
+// instead of relying only on Actual's fuzzy matching.
 function transformTransactions(transactions) {
-  return transactions.map((txn) => {
-    const amountInCents = Math.round(parseFloat(txn.amount) * 100);
-    const payeeName = txn.details?.counterparty?.name || txn.description || "Unknown";
-    const notes = txn.details?.category || "";
-
-    return {
-      date: txn.date,
-      amount: amountInCents,
-      payee_name: payeeName,
-      notes: notes ? notes + " - Imported from Teller" : "Imported from Teller",
-      cleared: txn.status === "posted",
-    };
-  });
+  return transactions.map((txn) => ({
+    date: txn.date,
+    amount: Math.round(Number(txn.amount) * 100),
+    payee_name: txn.description || "Unknown",
+    imported_id: txn.id,
+    notes: "Imported from Quiltt",
+    cleared: txn.status === "POSTED",
+  }));
 }
 
 // Initialize Actual Budget (download budget once, used across all mappings)
@@ -303,26 +199,26 @@ function saveSyncLog(status, message, stats = {}) {
   console.log(`[${timestamp}] ${status}: ${message}`, stats);
 }
 
-// Reconcile an account: query Actual's current balance, fetch Teller's balance, add adjustment for delta.
+// Reconcile an account: query Actual's current balance, fetch Quiltt's balance, add adjustment for delta.
 // Idempotent — only runs when mapping.pendingReconcile is true. Clears the flag on success.
-async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
+async function maybeReconcile({ mapping, quilttConfig, oldestImportedDate }) {
   if (!mapping.pendingReconcile) return null;
 
   const label = mapping.name || mapping.id;
   console.log(`   [${label}] Auto-reconcile requested...`);
 
-  let tellerBalance;
+  let bankBalance;
   try {
-    tellerBalance = await fetchTellerBalance({ mapping, tellerConfig });
+    bankBalance = await fetchQuilttBalance({ mapping, quilttConfig });
   } catch (err) {
-    console.warn(`   [${label}] Could not fetch Teller balance for reconcile: ${err.message}`);
+    console.warn(`   [${label}] Could not fetch Quiltt balance for reconcile: ${err.message}`);
     return null; // leave pendingReconcile=true so it retries on next sync
   }
-  if (tellerBalance == null) {
-    console.warn(`   [${label}] Teller returned no balance; skipping reconcile this run`);
+  if (bankBalance == null) {
+    console.warn(`   [${label}] Quiltt returned no balance; skipping reconcile this run`);
     return null;
   }
-  const tellerCents = Math.round(tellerBalance * 100);
+  const bankCents = Math.round(bankBalance * 100);
 
   // Sum existing Actual balance for this account.
   // Use the SDK's getAccountBalance if available; otherwise sum transactions.
@@ -331,8 +227,8 @@ async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
     if (typeof actual.getAccountBalance === "function") {
       const bal = await actual.getAccountBalance(mapping.actualAccountId);
       actualCents = Math.round(Number(bal) * 100); // SDK returns cents in some versions, dollars in others
-      // Heuristic: if value is suspiciously large vs Teller's, assume it was already in cents
-      if (Math.abs(actualCents) > Math.abs(tellerCents) * 1000) {
+      // Heuristic: if value is suspiciously large vs the bank's, assume it was already in cents
+      if (Math.abs(actualCents) > Math.abs(bankCents) * 1000) {
         actualCents = Math.round(Number(bal));
       }
     } else {
@@ -345,16 +241,16 @@ async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
     actualCents = txs.reduce((s, t) => s + (t.amount || 0), 0);
   }
 
-  const deltaCents = tellerCents - actualCents;
+  const deltaCents = bankCents - actualCents;
 
   if (deltaCents === 0) {
-    console.log(`   [${label}] Already balanced ($${(tellerCents / 100).toFixed(2)}). Clearing reconcile flag.`);
+    console.log(`   [${label}] Already balanced ($${(bankCents / 100).toFixed(2)}). Clearing reconcile flag.`);
     updateMappingState(mapping.id, {
       pendingReconcile: false,
       lastReconcileAt: new Date().toISOString(),
       lastReconcileDelta: 0,
     });
-    return { delta: 0, tellerBalance, actualBalance: actualCents / 100 };
+    return { delta: 0, bankBalance, actualBalance: actualCents / 100 };
   }
 
   // Date the adjustment one day before the oldest imported transaction (or today if none).
@@ -363,13 +259,13 @@ async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
   dt.setUTCDate(dt.getUTCDate() - 1);
   const adjustmentDate = dt.toISOString().slice(0, 10);
 
-  console.log(`   [${label}] Reconcile: Actual=${(actualCents / 100).toFixed(2)} Teller=${tellerBalance.toFixed(2)} Δ=${(deltaCents / 100).toFixed(2)}`);
+  console.log(`   [${label}] Reconcile: Actual=${(actualCents / 100).toFixed(2)} Bank=${bankBalance.toFixed(2)} Δ=${(deltaCents / 100).toFixed(2)}`);
 
   await actual.importTransactions(mapping.actualAccountId, [{
     date: adjustmentDate,
     amount: deltaCents,
     payee_name: "Starting Balance Adjustment",
-    notes: `Auto-reconcile to bank balance ${tellerBalance.toFixed(2)} on ${new Date().toISOString().slice(0, 10)}`,
+    notes: `Auto-reconcile to bank balance ${bankBalance.toFixed(2)} on ${new Date().toISOString().slice(0, 10)}`,
     cleared: true,
     imported_id: `auto-reconcile-${mapping.id}-${Date.now()}`,
   }]);
@@ -380,15 +276,24 @@ async function maybeReconcile({ mapping, tellerConfig, oldestImportedDate }) {
     lastReconcileDelta: deltaCents,
   });
 
-  return { delta: deltaCents, tellerBalance, actualBalance: actualCents / 100 };
+  return { delta: deltaCents, bankBalance, actualBalance: actualCents / 100 };
 }
 
 // Sync a single mapping. Returns per-mapping stats.
-async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
+async function syncOneMapping({ mapping, quilttConfig, startDate, backupDir }) {
   const label = mapping.name || mapping.id;
   console.log(`\n🏦 [${label}] Fetching transactions since ${startDate}...`);
 
-  const rawTransactions = await fetchTellerTransactions({ mapping, tellerConfig, startDate });
+  const { transactions: rawTransactions, connection } = await fetchTransactions({
+    quiltt: quilttConfig,
+    accountId: mapping.quilttAccountId,
+    startDate,
+  });
+
+  const needsReconnect = connectionNeedsRepair(connection?.status);
+  if (needsReconnect) {
+    console.warn(`   [${label}] Connection status is ${connection.status} — bank link needs repair. Imported data may be stale.`);
+  }
 
   let result = { added: [], updated: [] };
   let transactions = [];
@@ -414,7 +319,7 @@ async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
   // Auto-reconcile if requested (newly created accounts, or manually triggered)
   let reconcileResult = null;
   try {
-    reconcileResult = await maybeReconcile({ mapping, tellerConfig, oldestImportedDate });
+    reconcileResult = await maybeReconcile({ mapping, quilttConfig, oldestImportedDate });
   } catch (err) {
     console.error(`   [${label}] Reconcile failed:`, err.message);
     // don't fail the sync — leave pendingReconcile true
@@ -426,6 +331,8 @@ async function syncOneMapping({ mapping, tellerConfig, startDate, backupDir }) {
     fetched: rawTransactions ? rawTransactions.length : 0,
     added: result.added.length,
     updated: result.updated.length,
+    needsReconnect,
+    connectionStatus: connection?.status || null,
     reconcile: reconcileResult,
   };
 }
@@ -435,7 +342,7 @@ async function runSyncForMapping(mappingId) {
   const config = loadConfig();
   const mapping = (config.mappings || []).find(m => m.id === mappingId);
   if (!mapping) throw new Error(`Mapping not found: ${mappingId}`);
-  if (!mapping.tellerAccessToken || !mapping.tellerAccountId || !mapping.actualAccountId) {
+  if (!mapping.quilttAccountId || !mapping.actualAccountId) {
     throw new Error(`Mapping ${mappingId} is incomplete`);
   }
 
@@ -451,14 +358,14 @@ async function runSyncForMapping(mappingId) {
     const backupDir = path.join(__dirname, "transaction-data");
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
-    const stats = await syncOneMapping({ mapping, tellerConfig: config.teller, startDate, backupDir });
+    const stats = await syncOneMapping({ mapping, quilttConfig: config.quiltt, startDate, backupDir });
 
     updateMappingState(mappingId, {
       lastSyncAt: new Date().toISOString(),
       lastSyncStatus: "success",
       lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
       lastError: null,
-      needsReconnect: false,
+      needsReconnect: stats.needsReconnect,
     });
 
     saveSyncLog("SUCCESS", `Mapping sync: ${mapping.name}`, { mappingId, ...stats });
@@ -466,7 +373,7 @@ async function runSyncForMapping(mappingId) {
     return stats;
   } catch (error) {
     if (initOk) { try { await actual.shutdown(); } catch (_) {} }
-    const isAuth = error?.name === "TellerAuthError";
+    const isAuth = error?.name === "QuilttAuthError";
     updateMappingState(mappingId, {
       lastSyncAt: new Date().toISOString(),
       lastSyncStatus: isAuth ? "auth_error" : "error",
@@ -492,6 +399,9 @@ async function runSync() {
     if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
       throw new Error("Missing Actual Budget configuration (serverURL/password/syncId)");
     }
+    if (!config.quiltt.apiSecret || !config.quiltt.profileId) {
+      throw new Error("Missing Quiltt configuration (apiSecret/profileId). Connect a bank via /connect first.");
+    }
 
     console.log(`✓ Found ${config.mappings.length} mapping(s)`);
     console.log(`  Days to sync: ${config.sync.daysToSync}`);
@@ -512,8 +422,8 @@ async function runSync() {
         disabled.push({ mappingId: m.id, name: m.name });
         continue;
       }
-      if (!m.tellerAccessToken || !m.tellerAccountId || !m.actualAccountId) {
-        invalid.push({ mappingId: m.id, name: m.name, reason: "missing fields" });
+      if (!m.quilttAccountId || !m.actualAccountId) {
+        invalid.push({ mappingId: m.id, name: m.name, reason: "missing fields (legacy Teller mapping?)" });
         continue;
       }
       valid.push(m);
@@ -522,17 +432,17 @@ async function runSync() {
     const perMapping = [];
     for (const mapping of valid) {
       try {
-        const stats = await syncOneMapping({ mapping, tellerConfig: config.teller, startDate, backupDir });
+        const stats = await syncOneMapping({ mapping, quilttConfig: config.quiltt, startDate, backupDir });
         perMapping.push({ ok: true, ...stats });
         updateMappingState(mapping.id, {
           lastSyncAt: new Date().toISOString(),
           lastSyncStatus: "success",
           lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
           lastError: null,
-          needsReconnect: false,
+          needsReconnect: stats.needsReconnect,
         });
       } catch (err) {
-        const isAuth = err?.name === "TellerAuthError";
+        const isAuth = err?.name === "QuilttAuthError";
         const detail = {
           mappingId: mapping.id,
           name: mapping.name || mapping.id,
@@ -605,34 +515,12 @@ if (isMainModule) {
     .catch((error) => { console.error("\n❌ Sync script failed:"); console.error(error); process.exit(1); });
 }
 
-// One-shot migration: if config.json still has legacy single-account fields and no
-// mappings array, persist the migrated mapping (with stable id) and drop the legacy
-// fields. Safe to call repeatedly — no-op when nothing to migrate.
-function persistLegacyMigrationIfNeeded() {
-  const configPath = path.join(__dirname, "config", "config.json");
-  if (!fs.existsSync(configPath)) return false;
-  let raw;
-  try { raw = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (_) { return false; }
-
-  const hasLegacy = !!(raw.teller?.accessToken || raw.teller?.accountId || raw.actual?.accountId);
-  const hasMappings = Array.isArray(raw.mappings) && raw.mappings.length > 0;
-
-  if (!hasLegacy) return false;          // nothing to do
-  if (hasMappings) {
-    // Already have mappings; just drop any leftover legacy fields
-    saveMappings(raw.mappings);
-    console.log("🧹 Cleaned legacy single-account fields from config.json");
-    return true;
-  }
-
-  // hasLegacy && !hasMappings → synthesize via loadConfig, then persist
-  const cfg = loadConfig();
-  if (cfg.mappings.length > 0) {
-    saveMappings(cfg.mappings);
-    console.log("✅ Persisted legacy → mappings migration to config.json");
-    return true;
-  }
-  return false;
-}
-
-export { runSync, runSyncForMapping, loadConfig, saveMappings, updateMappingState, newMappingId, TellerAuthError, persistLegacyMigrationIfNeeded };
+export {
+  runSync,
+  runSyncForMapping,
+  loadConfig,
+  saveMappings,
+  saveQuilttConfig,
+  updateMappingState,
+  newMappingId,
+};

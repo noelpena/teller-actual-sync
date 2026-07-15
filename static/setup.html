@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Setup Wizard - Teller-Actual Sync</title>
+  <title>Setup Wizard - Quiltt-Actual Sync</title>
   <link rel="stylesheet" href="/static/setup.css">
 </head>
 <body>
   <div class="container">
     <div class="setup-card">
       <div class="header">
-        <h1>🎉 Bank Account Connected!</h1>
-        <p class="subtitle">Now let's connect to your Actual Budget instance</p>
+        <h1>⚙️ Actual Budget Setup</h1>
+        <p class="subtitle">Connect to your Actual Budget instance</p>
       </div>
 
       <form id="setup-form">
@@ -53,7 +53,7 @@
 
         <div class="section">
           <h2>Budget Configuration</h2>
-          <p class="section-description">Specify which budget and account to sync to</p>
+          <p class="section-description">Specify which budget to sync to. Account pairing happens later in the admin dashboard.</p>
 
           <div class="form-group">
             <label for="syncId">
@@ -69,22 +69,6 @@
               required
             >
             <small class="help-text">Settings → Advanced → Sync ID</small>
-          </div>
-
-          <div class="form-group">
-            <label for="accountId">
-              Account ID
-              <span class="required">*</span>
-              <span class="tooltip" title="Found in the URL when viewing an account: /accounts/{ID}">ℹ️</span>
-            </label>
-            <input
-              type="text"
-              id="accountId"
-              name="accountId"
-              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-              required
-            >
-            <small class="help-text">Open the account in Actual Budget, the ID is in the URL</small>
           </div>
         </div>
 
@@ -153,13 +137,8 @@
         </ol>
       </div>
       <div class="help-section">
-        <h4>Finding Your Account ID</h4>
-        <ol>
-          <li>Open the account you want to sync in Actual Budget</li>
-          <li>Look at the browser URL bar</li>
-          <li>Copy the ID after /accounts/</li>
-          <li>Example: /accounts/<strong>abc123-def456</strong></li>
-        </ol>
+        <h4>Mapping Bank Accounts</h4>
+        <p>After saving, head to the admin dashboard's <strong>Account Mappings</strong> tab to pair each connected bank account with an Actual Budget account.</p>
       </div>
       <div class="help-section">
         <h4>Server URL Examples</h4>

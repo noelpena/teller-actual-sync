@@ -1,20 +1,24 @@
 {
-  "teller": {
-    "appId": "your_teller_app_id_here",
-    "accessToken": "your_teller_access_token_here",
-    "accountId": "your_teller_account_id_here",
-    "env": "development",
-    "certPath": "",
-    "certKeyPath": "",
-    "userId": "your_teller_user_id"
+  "quiltt": {
+    "apiSecret": "your_quiltt_api_key_secret_here",
+    "connectorId": "your_quiltt_connector_id_here",
+    "profileId": ""
   },
   "actual": {
     "dataDir": "/app/actual-data",
     "serverURL": "http://your-actual-server:5006",
     "password": "your_actual_password",
-    "syncId": "your_budget_sync_id",
-    "accountId": "your_actual_account_id_here"
+    "syncId": "your_budget_sync_id"
   },
+  "mappings": [
+    {
+      "id": "m_example",
+      "name": "My Checking",
+      "connectionId": "conn_xxxxxxxxxxxx",
+      "quilttAccountId": "acct_xxxxxxxxxxxx",
+      "actualAccountId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    }
+  ],
   "sync": {
     "daysToSync": 7,
     "cronSchedule": "0 8 * * *"

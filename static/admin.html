@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Teller-Actual Sync - Admin</title>
+  <title>Quiltt-Actual Sync - Admin</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    window.TELLER_CONFIG = {
-      applicationId: "{{ app_id }}",
-      environment: "{{ environment }}"
+    window.QUILTT_CONFIG = {
+      connectorId: "{{ connector_id }}",
+      hasCredentials: {{ has_credentials }}
     };
   </script>
-  <script src="https://cdn.teller.io/connect/connect.js"></script>
+  <script src="https://cdn.quiltt.io/v1/connector.js"></script>
   <style>
     .tab-button.active {
       border-bottom: 2px solid #3b82f6;
@@ -38,7 +38,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex justify-between items-center h-16">
         <div class="flex items-center">
-          <h1 class="text-xl font-bold text-gray-900">Teller → Actual Sync</h1>
+          <h1 class="text-xl font-bold text-gray-900">Quiltt → Actual Sync</h1>
           <span class="ml-3 px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">Admin</span>
         </div>
         <button id="syncNowBtn" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -92,22 +92,22 @@
       <div class="bg-white rounded-lg shadow p-6 mb-6">
         <h2 class="text-lg font-semibold mb-4">Setup Status</h2>
         <div class="space-y-4">
-          <div class="flex items-center justify-between p-4 border rounded-lg" id="tellerStatusCard">
+          <div class="flex items-center justify-between p-4 border rounded-lg" id="quilttStatusCard">
             <div class="flex items-center space-x-3">
               <div class="flex-shrink-0">
-                <span id="tellerStatusIcon" class="text-2xl">⏳</span>
+                <span id="quilttStatusIcon" class="text-2xl">⏳</span>
               </div>
               <div>
-                <h3 class="font-medium">Teller Connection</h3>
-                <p id="tellerStatusText" class="text-sm text-gray-500">Checking...</p>
+                <h3 class="font-medium">Quiltt Connection</h3>
+                <p id="quilttStatusText" class="text-sm text-gray-500">Checking...</p>
               </div>
             </div>
             <div class="flex space-x-2">
-              <button id="testTellerBtn" class="px-4 py-2 text-sm bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200">
+              <button id="testQuilttBtn" class="px-4 py-2 text-sm bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200">
                 Test Connection
               </button>
               <a href="/connect" class="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">
-                Reconnect
+                Connect a Bank
               </a>
             </div>
           </div>
@@ -139,12 +139,12 @@
         <h2 class="text-lg font-semibold mb-4">Current Configuration</h2>
         <div class="space-y-3">
           <div class="flex justify-between py-2 border-b">
-            <span class="text-gray-600">Environment</span>
-            <span id="configEnv" class="font-medium">-</span>
+            <span class="text-gray-600">Quiltt Connector ID</span>
+            <span id="configConnectorId" class="font-mono text-sm">-</span>
           </div>
           <div class="flex justify-between py-2 border-b">
-            <span class="text-gray-600">Teller Account ID</span>
-            <span id="configTellerAccount" class="font-mono text-sm">-</span>
+            <span class="text-gray-600">Quiltt Profile ID</span>
+            <span id="configProfileId" class="font-mono text-sm">-</span>
           </div>
           <div class="flex justify-between py-2 border-b">
             <span class="text-gray-600">Actual Budget Server</span>
@@ -166,49 +166,25 @@
     <div id="config-tab" class="tab-content hidden">
       <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold mb-6">Edit Configuration</h2>
-        
+
         <form id="configForm" class="space-y-6">
-          <!-- Teller Section -->
+          <!-- Quiltt Section -->
           <div class="border-b pb-6">
-            <h3 class="text-md font-semibold mb-4">Teller Configuration</h3>
+            <h3 class="text-md font-semibold mb-4">Quiltt Configuration</h3>
             <div class="grid grid-cols-1 gap-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">App ID</label>
-                <input type="text" name="APP_ID" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                <label class="block text-sm font-medium text-gray-700 mb-1">API Key Secret</label>
+                <input type="password" name="QUILTT_API_SECRET" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                <p class="mt-1 text-xs text-gray-500">From the <a href="https://dashboard.quiltt.dev" target="_blank" class="text-blue-600 hover:underline">Quiltt Dashboard</a>. Leave unchanged to keep the current secret.</p>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Environment</label>
-                <select name="ENV" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-                  <option value="sandbox">Sandbox</option>
-                  <option value="development">Development</option>
-                  <option value="production">Production</option>
-                </select>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Connector ID</label>
+                <input type="text" name="QUILTT_CONNECTOR_ID" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Access Token</label>
-                <input type="password" name="TELLER_ACCESS_TOKEN" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Account ID</label>
-                <input type="text" name="TELLER_ACCOUNT_ID" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-              </div>
-            </div>
-
-            <!-- Certificates Upload -->
-            <div class="mt-6 pt-6 border-t">
-              <h4 class="text-sm font-semibold mb-3 text-gray-700">mTLS Certificates (Development/Production)</h4>
-              <p class="text-xs text-gray-500 mb-4">Required for development and production environments. Leave empty for sandbox.</p>
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">Certificate File (certificate.pem)</label>
-                  <input type="file" id="certFile" accept=".pem,.crt" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500">
-                  <p id="certFileStatus" class="mt-1 text-xs text-gray-500"></p>
-                </div>
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">Private Key File (private_key.pem)</label>
-                  <input type="file" id="certKeyFile" accept=".pem,.key" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500">
-                  <p id="certKeyFileStatus" class="mt-1 text-xs text-gray-500"></p>
-                </div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Profile ID (managed automatically)</label>
+                <input type="text" name="QUILTT_PROFILE_ID" readonly class="w-full px-3 py-2 border border-gray-200 bg-gray-50 rounded-md text-gray-500 font-mono text-sm">
+                <p class="mt-1 text-xs text-gray-500">Created the first time you connect a bank. All connections live under this profile.</p>
               </div>
             </div>
           </div>
@@ -228,10 +204,6 @@
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Sync ID</label>
                 <input type="text" name="ACTUAL_SYNC_ID" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Account ID</label>
-                <input type="text" name="ACTUAL_ACCOUNT_ID" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
               </div>
             </div>
           </div>
@@ -282,8 +254,7 @@
           <span id="mappingsCount" class="text-sm text-gray-500"></span>
         </div>
         <p class="text-sm text-gray-600 mb-4">
-          Each mapping pairs one Teller bank account with one Actual Budget account.
-          One Teller access token can be reused for multiple accounts at the same bank.
+          Each mapping pairs one Quiltt bank account with one Actual Budget account.
         </p>
         <div id="mappingsTable" class="border rounded-lg divide-y">
           <div class="p-6 text-center text-gray-500">Loading mappings...</div>
@@ -291,17 +262,22 @@
       </div>
 
       <div class="bg-white rounded-lg shadow p-6 mb-6">
-        <h2 class="text-lg font-semibold mb-2">Add Accounts from a New Bank</h2>
+        <h2 class="text-lg font-semibold mb-2">Add Accounts</h2>
         <p class="text-sm text-gray-600 mb-4">
-          Click below to authenticate with a bank via Teller. After login, you'll
-          see all accounts at that bank and pick which to sync to which Actual accounts.
+          Connect a new bank through Quiltt, or map accounts from banks you've already connected.
         </p>
-        <button id="connectAnotherBankBtn" type="button"
-          class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
-          Connect Another Bank
-        </button>
+        <div class="flex gap-3">
+          <button id="connectAnotherBankBtn" type="button"
+            class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+            Connect Another Bank
+          </button>
+          <button id="mapExistingAccountsBtn" type="button"
+            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200">
+            Map Unmapped Accounts
+          </button>
+        </div>
 
-        <!-- Account picker shown after a successful Teller Connect -->
+        <!-- Account picker shown after a successful connection (or "Map Unmapped Accounts") -->
         <div id="newBankAccountsPanel" class="hidden mt-6 border-t pt-4">
           <div class="flex items-center justify-between mb-3">
             <h3 id="newBankAccountsTitle" class="font-medium">Map accounts</h3>
@@ -310,8 +286,7 @@
             </button>
           </div>
           <p class="text-xs text-gray-500 mb-3">
-            Pick which accounts to sync. For each, choose the matching Actual Budget account
-            (or leave "— skip —" to ignore it).
+            Pick which accounts to sync. For each, create a new Actual account or map to an existing one.
           </p>
           <div id="newBankAccountsList" class="space-y-3"></div>
           <div class="flex justify-end mt-4">
@@ -328,7 +303,7 @@
           <summary class="text-lg font-semibold cursor-pointer">Manual entry (advanced)</summary>
           <p class="text-xs text-gray-500 mt-2 mb-4">
             Use if you already have IDs you want to paste in directly. Most users should use
-            "Connect Another Bank" above.
+            the buttons above.
           </p>
           <form id="addMappingForm" class="space-y-4">
             <div>
@@ -337,13 +312,13 @@
                 class="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Teller access token</label>
-              <input type="password" name="tellerAccessToken" placeholder="token_..." required
+              <label class="block text-sm font-medium text-gray-700 mb-1">Quiltt account ID</label>
+              <input type="text" name="quilttAccountId" placeholder="acct_..." required
                 class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Teller account ID</label>
-              <input type="text" name="tellerAccountId" placeholder="acc_..." required
+              <label class="block text-sm font-medium text-gray-700 mb-1">Quiltt connection ID (optional, enables reconnect)</label>
+              <input type="text" name="connectionId" placeholder="conn_..."
                 class="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm focus:ring-blue-500 focus:border-blue-500">
             </div>
             <div>

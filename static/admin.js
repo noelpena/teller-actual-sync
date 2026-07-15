@@ -2,7 +2,7 @@
 document.querySelectorAll('.tab-button').forEach(button => {
   button.addEventListener('click', () => {
     const tabName = button.dataset.tab;
-    
+
     // Update button states
     document.querySelectorAll('.tab-button').forEach(btn => {
       btn.classList.remove('active', 'text-blue-600', 'border-blue-600');
@@ -10,13 +10,13 @@ document.querySelectorAll('.tab-button').forEach(button => {
     });
     button.classList.add('active', 'text-blue-600', 'border-blue-600');
     button.classList.remove('text-gray-500', 'border-transparent');
-    
+
     // Show/hide tabs
     document.querySelectorAll('.tab-content').forEach(tab => {
       tab.classList.add('hidden');
     });
     document.getElementById(`${tabName}-tab`).classList.remove('hidden');
-    
+
     // Load data for the tab
     if (tabName === 'dashboard') loadDashboard();
     if (tabName === 'config') loadConfig();
@@ -29,13 +29,13 @@ document.querySelectorAll('.tab-button').forEach(button => {
 function showToast(message, type = 'success') {
   const toast = document.getElementById('toast');
   const toastMessage = document.getElementById('toastMessage');
-  
+
   toastMessage.textContent = message;
   toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white ${
     type === 'success' ? 'bg-green-600' : 'bg-red-600'
   }`;
   toast.classList.remove('hidden');
-  
+
   setTimeout(() => {
     toast.classList.add('hidden');
   }, 3000);
@@ -68,8 +68,8 @@ async function loadDashboard() {
     const configRes = await fetch('/admin/api/config');
     const config = await configRes.json();
 
-    document.getElementById('configEnv').textContent = config.ENV || 'sandbox';
-    document.getElementById('configTellerAccount').textContent = config.TELLER_ACCOUNT_ID || 'Not set';
+    document.getElementById('configConnectorId').textContent = config.QUILTT_CONNECTOR_ID || 'Not set';
+    document.getElementById('configProfileId').textContent = config.QUILTT_PROFILE_ID || 'Not created yet';
     document.getElementById('configActualServer').textContent = config.ACTUAL_SERVER_URL || 'Not set';
     document.getElementById('configDaysToSync').textContent = config.DAYS_TO_SYNC || '7';
     document.getElementById('configCronSchedule').textContent = config.CRON_SCHEDULE || '0 2 * * *';
@@ -89,21 +89,27 @@ async function loadSetupStatus() {
     const statusRes = await fetch('/api/config/status');
     const status = await statusRes.json();
 
-    // Update Teller status
-    const tellerIcon = document.getElementById('tellerStatusIcon');
-    const tellerText = document.getElementById('tellerStatusText');
-    const tellerCard = document.getElementById('tellerStatusCard');
+    // Update Quiltt status
+    const quilttIcon = document.getElementById('quilttStatusIcon');
+    const quilttText = document.getElementById('quilttStatusText');
+    const quilttCard = document.getElementById('quilttStatusCard');
 
-    if (status.hasTellerConfig) {
-      tellerIcon.textContent = '✅';
-      tellerText.textContent = 'Connected and configured';
-      tellerCard.classList.remove('border-yellow-300', 'bg-yellow-50');
-      tellerCard.classList.add('border-green-300', 'bg-green-50');
+    if (status.hasQuilttConfig) {
+      quilttIcon.textContent = '✅';
+      quilttText.textContent = `Connected — ${status.validMappingCount} mapped account${status.validMappingCount === 1 ? '' : 's'}`;
+      quilttCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+      quilttCard.classList.add('border-green-300', 'bg-green-50');
     } else {
-      tellerIcon.textContent = '⚠️';
-      tellerText.textContent = 'Not configured - Connect your bank account';
-      tellerCard.classList.remove('border-green-300', 'bg-green-50');
-      tellerCard.classList.add('border-yellow-300', 'bg-yellow-50');
+      quilttIcon.textContent = '⚠️';
+      if (!status.hasQuilttCredentials) {
+        quilttText.textContent = 'Not configured - add your Quiltt API secret and Connector ID';
+      } else if (!status.hasProfile) {
+        quilttText.textContent = 'Credentials saved - connect your first bank account';
+      } else {
+        quilttText.textContent = 'Bank connected - map accounts in the Account Mappings tab';
+      }
+      quilttCard.classList.remove('border-green-300', 'bg-green-50');
+      quilttCard.classList.add('border-yellow-300', 'bg-yellow-50');
     }
 
     // Update Actual Budget status
@@ -128,41 +134,32 @@ async function loadSetupStatus() {
   }
 }
 
-// Test Teller connection
-async function testTellerConnection() {
-  const btn = document.getElementById('testTellerBtn');
+// Test Quiltt connection
+async function testQuilttConnection() {
+  const btn = document.getElementById('testQuilttBtn');
   const originalText = btn.textContent;
 
   try {
     btn.textContent = 'Testing...';
     btn.disabled = true;
 
-    // Check if config exists first
-    const statusRes = await fetch('/api/config/status');
-    const status = await statusRes.json();
-
-    if (!status.hasTellerConfig) {
-      showToast('Teller not configured. Please connect your bank account first.', 'error');
-      return;
-    }
-
-    // Call the backend test endpoint (it will load config from file)
-    const testRes = await fetch('/api/test/teller', {
+    const testRes = await fetch('/api/test/quiltt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}) // Backend will load all config from file
+      body: JSON.stringify({})
     });
 
     const result = await testRes.json();
 
     if (result.success) {
-      showToast(`✅ Connected to ${result.institution} - ${result.accountName}`, 'success');
+      const detail = result.accountCount != null ? ` — ${result.accountCount} account(s) on profile` : '';
+      showToast(`✅ Connected to Quiltt${detail}`, 'success');
     } else {
       showToast(`❌ Connection failed: ${result.error}`, 'error');
     }
 
   } catch (error) {
-    console.error('Error testing Teller connection:', error);
+    console.error('Error testing Quiltt connection:', error);
     showToast(`❌ Failed to test connection: ${error.message}`, 'error');
   } finally {
     btn.textContent = originalText;
@@ -252,41 +249,9 @@ async function loadConfig() {
       }
     }
 
-    // Check certificate status
-    await checkCertificateStatus();
-
   } catch (error) {
     console.error('Error loading config:', error);
     showToast('Error loading configuration', 'error');
-  }
-}
-
-// Check if certificates exist
-async function checkCertificateStatus() {
-  try {
-    const res = await fetch('/admin/api/certificates/status');
-    const status = await res.json();
-
-    const certStatus = document.getElementById('certFileStatus');
-    const keyStatus = document.getElementById('certKeyFileStatus');
-
-    if (status.certificateExists) {
-      certStatus.textContent = '✓ Certificate uploaded';
-      certStatus.className = 'mt-1 text-xs text-green-600';
-    } else {
-      certStatus.textContent = 'No certificate uploaded';
-      certStatus.className = 'mt-1 text-xs text-gray-500';
-    }
-
-    if (status.keyExists) {
-      keyStatus.textContent = '✓ Private key uploaded';
-      keyStatus.className = 'mt-1 text-xs text-green-600';
-    } else {
-      keyStatus.textContent = 'No private key uploaded';
-      keyStatus.className = 'mt-1 text-xs text-gray-500';
-    }
-  } catch (error) {
-    console.error('Error checking certificate status:', error);
   }
 }
 
@@ -307,38 +272,19 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
   e.preventDefault();
 
   try {
-    // First, upload certificate files if selected
-    const certFile = document.getElementById('certFile').files[0];
-    const certKeyFile = document.getElementById('certKeyFile').files[0];
-
-    if (certFile || certKeyFile) {
-      const certFormData = new FormData();
-      if (certFile) certFormData.append('certificate', certFile);
-      if (certKeyFile) certFormData.append('privateKey', certKeyFile);
-
-      const certRes = await fetch('/admin/api/certificates/upload', {
-        method: 'POST',
-        body: certFormData
-      });
-
-      if (!certRes.ok) {
-        throw new Error('Failed to upload certificates');
-      }
-
-      showToast('Certificates uploaded successfully', 'success');
-    }
-
-    // Then save the configuration
     const formData = new FormData(e.target);
     const config = Object.fromEntries(formData.entries());
 
     // Remove password fields that haven't been modified (they contain masked values)
-    const passwordFields = ['TELLER_ACCESS_TOKEN', 'ACTUAL_PASSWORD'];
+    const passwordFields = ['QUILTT_API_SECRET', 'ACTUAL_PASSWORD'];
     passwordFields.forEach(field => {
       if (!modifiedFields.has(field)) {
         delete config[field];
       }
     });
+
+    // Profile ID is managed by the server — never submit it
+    delete config.QUILTT_PROFILE_ID;
 
     const res = await fetch('/admin/api/config', {
       method: 'POST',
@@ -350,7 +296,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
       showToast('Configuration saved! Restart container for changes to take effect.', 'success');
       setTimeout(() => {
         loadDashboard();
-        loadConfig(); // Reload to show updated certificate status
+        loadConfig();
       }, 1000);
     } else {
       throw new Error('Failed to save configuration');
@@ -372,18 +318,18 @@ async function loadLogs() {
   try {
     const res = await fetch('/admin/api/logs');
     const { logs } = await res.json();
-    
+
     const container = document.getElementById('logsContainer');
-    
+
     if (!logs || logs.length === 0) {
       container.innerHTML = '<div class="p-6 text-center text-gray-500">No sync logs yet</div>';
       return;
     }
-    
+
     container.innerHTML = logs.map(log => {
       const date = new Date(log.timestamp);
       const statusClass = log.status === 'SUCCESS' ? 'text-green-600 bg-green-50' : 'text-red-600 bg-red-50';
-      
+
       return `
         <div class="p-4 hover:bg-gray-50">
           <div class="flex items-center justify-between">
@@ -407,10 +353,10 @@ async function loadLogs() {
         </div>
       `;
     }).join('');
-    
+
   } catch (error) {
     console.error('Error loading logs:', error);
-    document.getElementById('logsContainer').innerHTML = 
+    document.getElementById('logsContainer').innerHTML =
       '<div class="p-6 text-center text-red-500">Error loading logs</div>';
   }
 }
@@ -419,14 +365,14 @@ async function loadLogs() {
 document.getElementById('syncNowBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncNowBtn');
   const originalText = btn.textContent;
-  
+
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner inline-block"></div><span class="ml-2">Syncing...</span>';
-  
+
   try {
     const res = await fetch('/manual-sync', { method: 'POST' });
     const data = await res.json();
-    
+
     if (data.success) {
       showToast('Sync completed successfully!', 'success');
       setTimeout(() => {
@@ -446,8 +392,55 @@ document.getElementById('syncNowBtn').addEventListener('click', async () => {
 });
 
 // Test connection button event listeners
-document.getElementById('testTellerBtn').addEventListener('click', testTellerConnection);
+document.getElementById('testQuilttBtn').addEventListener('click', testQuilttConnection);
 document.getElementById('testActualBtn').addEventListener('click', testActualConnection);
+
+// ===== Quiltt Connector helpers =====
+
+// Issue a session token and authenticate the Connector SDK.
+// Returns the connector ID to use.
+async function prepareConnector() {
+  if (!window.Quiltt) throw new Error('Quiltt Connector script not loaded. Refresh the page.');
+  const connectorId = window.QUILTT_CONFIG?.connectorId;
+  if (!connectorId) throw new Error('Quiltt Connector ID is not configured. Set it under Configuration.');
+
+  const res = await fetch('/api/quiltt/session', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Session request failed (${res.status})`);
+
+  window.Quiltt.authenticate(data.token);
+  return connectorId;
+}
+
+// Repair a broken connection via the Connector's reconnect flow
+async function repairConnection(connectionId, btn) {
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  try {
+    const connectorId = await prepareConnector();
+    const reconnector = window.Quiltt.reconnect(connectorId, {
+      connectionId,
+      onExitSuccess: async () => {
+        try {
+          await fetch('/api/mappings/reconnected', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ connectionId }),
+          });
+        } catch (_) { /* flag clears on next successful sync anyway */ }
+        showToast('Connection repaired!', 'success');
+        loadMappings();
+      },
+      onExitError: () => showToast('Reconnect flow failed. Try again.', 'error'),
+    });
+    reconnector.open();
+  } catch (error) {
+    showToast(`Reconnect failed: ${error.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
 
 // ===== Account Mappings =====
 
@@ -498,6 +491,9 @@ async function loadMappings() {
       const errLine = m.lastError
         ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(m.lastError).slice(0, 200)}</div>`
         : '';
+      const reconnectBtn = m.needsReconnect && m.connectionId
+        ? `<button data-conn="${escapeHtml(m.connectionId)}" class="repair-mapping px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>`
+        : '';
       return `
         <div class="p-4" data-mapping-id="${m.id}">
           <div class="flex items-start justify-between gap-4">
@@ -507,13 +503,14 @@ async function loadMappings() {
                 ${statusBadge(m)}
               </div>
               <div class="text-xs text-gray-500 font-mono mt-1 space-y-0.5">
-                <div>Teller acct: ${escapeHtml(m.tellerAccountId)} (${escapeHtml(m.tellerAccessTokenMasked || '—')})</div>
+                <div>Quiltt acct: ${escapeHtml(m.quilttAccountId)}${m.connectionId ? ` (${escapeHtml(m.connectionId)})` : ''}</div>
                 <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
                 <div class="text-gray-400">Last sync: ${relativeTime(m.lastSyncAt)} · ${escapeHtml(stats)}</div>
               </div>
               ${errLine}
             </div>
             <div class="flex flex-col gap-1 shrink-0">
+              ${reconnectBtn}
               <button data-id="${m.id}" class="sync-mapping px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Sync</button>
               <button data-id="${m.id}" class="reconcile-mapping px-3 py-1 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200">Reconcile</button>
               <button data-id="${m.id}" class="edit-mapping px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Edit</button>
@@ -536,6 +533,9 @@ async function loadMappings() {
     });
     container.querySelectorAll('.toggle-mapping').forEach(btn => {
       btn.addEventListener('click', () => toggleMapping(btn.dataset.id, btn.dataset.disabled === '1'));
+    });
+    container.querySelectorAll('.repair-mapping').forEach(btn => {
+      btn.addEventListener('click', () => repairConnection(btn.dataset.conn, btn));
     });
     container.querySelectorAll('.edit-mapping').forEach(btn => {
       const m = mappings.find(x => x.id === btn.dataset.id);
@@ -588,7 +588,7 @@ async function reconcileSingleMapping(id, btn) {
     if (!data.success) throw new Error(data.error || 'Reconcile failed');
     const r = data.stats?.reconcile;
     if (r && r.delta != null) {
-      showToast(`Reconciled: Δ ${(r.delta / 100).toFixed(2)} (Teller ${r.tellerBalance.toFixed(2)})`, 'success');
+      showToast(`Reconciled: Δ ${(r.delta / 100).toFixed(2)} (bank ${r.bankBalance.toFixed(2)})`, 'success');
     } else {
       showToast('Reconcile completed (already balanced or no delta)', 'success');
     }
@@ -639,7 +639,7 @@ function openEditMapping(mapping, actualAccounts) {
             </select>
           </div>
           <div class="text-xs text-gray-500 font-mono pt-1">
-            Teller account: ${escapeHtml(mapping.tellerAccountId)} (read-only — to change, delete and re-create the mapping)
+            Quiltt account: ${escapeHtml(mapping.quilttAccountId)} (read-only — to change, delete and re-create the mapping)
           </div>
           <div class="flex justify-end gap-2 pt-2">
             <button type="button" id="editMappingCancel" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded">Cancel</button>
@@ -684,8 +684,8 @@ document.getElementById('addMappingForm').addEventListener('submit', async (e) =
   const fd = new FormData(form);
   const payload = {
     name: fd.get('name'),
-    tellerAccessToken: fd.get('tellerAccessToken'),
-    tellerAccountId: fd.get('tellerAccountId'),
+    quilttAccountId: fd.get('quilttAccountId'),
+    connectionId: fd.get('connectionId') || undefined,
     actualAccountId: fd.get('actualAccountId'),
   };
 
@@ -712,10 +712,8 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ===== Connect Another Bank (inline Teller Connect + account picker) =====
+// ===== Connect Another Bank (Quiltt Connector + account picker) =====
 
-let _newBankToken = null;
-let _newBankAccounts = [];
 let _actualAccountsCache = null;
 
 // Stringify whatever a server might send back as an "error" field
@@ -745,122 +743,123 @@ async function fetchActualAccounts() {
   return _actualAccountsCache;
 }
 
-async function fetchTellerAccountsForToken(accessToken) {
-  const res = await fetch('/api/teller/accounts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken }),
-  });
+async function fetchQuilttAccounts() {
+  const res = await fetch('/api/quiltt/accounts');
   const data = await safeJson(res);
   if (!res.ok) {
     const msg = errorMessage(data, `HTTP ${res.status}`);
-    console.error('fetchTellerAccountsForToken failed:', res.status, data);
+    console.error('fetchQuilttAccounts failed:', res.status, data);
     throw new Error(msg);
   }
   return data.accounts || [];
 }
 
-// Smart default: investments and loans go off-budget in Actual; everything else on-budget.
-function suggestOffBudget(tellerAccount) {
-  const t = (tellerAccount?.type || '').toLowerCase();
-  return t === 'investment' || t === 'loan';
+// Quiltt syncs new connections in the background — accounts can take a few
+// seconds to appear. Poll until the connection's accounts show up.
+async function pollQuilttAccountsForConnection(connectionId, attempts = 10, delayMs = 2000) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const accounts = await fetchQuilttAccounts();
+      const matched = connectionId
+        ? accounts.filter(a => a.connectionId === connectionId)
+        : accounts;
+      if (matched.length > 0) return matched;
+    } catch (_) { /* transient — retry */ }
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  return [];
 }
 
-function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMappings) {
+// Smart default: investments and loans go off-budget in Actual; everything else on-budget.
+function suggestOffBudget(quilttAccount) {
+  const k = (quilttAccount?.kind || '').toUpperCase();
+  return k === 'INVESTMENT' || k === 'LOAN';
+}
+
+function renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existingMappings) {
   const list = document.getElementById('newBankAccountsList');
 
-  const byTellerAccountId = new Map();
-  (existingMappings || []).forEach(m => byTellerAccountId.set(m.tellerAccountId, m));
+  const mappedIds = new Set((existingMappings || []).map(m => m.quilttAccountId));
 
   const actualOptions = actualAccounts
     .filter(a => !a.closed)
     .map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}${a.offbudget ? ' (off-budget)' : ''}</option>`)
     .join('');
 
-  if (tellerAccounts.length === 0) {
-    list.innerHTML = '<div class="text-sm text-gray-500">No accounts returned from Teller for this token.</div>';
+  const unmapped = quilttAccounts.filter(a => !mappedIds.has(a.id));
+  const alreadyMapped = quilttAccounts.filter(a => mappedIds.has(a.id));
+
+  if (unmapped.length === 0) {
+    list.innerHTML = `
+      <div class="text-sm text-gray-500">
+        ${quilttAccounts.length === 0
+          ? 'No accounts found yet. Quiltt may still be syncing — try again in a moment.'
+          : 'All accounts on this connection are already mapped.'}
+      </div>`;
     return;
   }
 
-  const rotationRows = [];
-  const newRows = [];
+  const mappedRows = alreadyMapped.map(a => `
+    <div class="border rounded-md p-3 bg-gray-50 text-sm text-gray-500">
+      ${escapeHtml(a.name || a.id)} — already mapped
+    </div>
+  `);
 
-  tellerAccounts.forEach(t => {
-    const subtitle = [t.institution, t.type, t.subtype, t.last_four ? `••${t.last_four}` : null]
-      .filter(Boolean).join(' · ');
-    const existing = byTellerAccountId.get(t.id);
+  const newRows = unmapped.map(a => {
+    const subtitle = [a.institution, a.kind].filter(Boolean).join(' · ');
+    const offBudgetDefault = suggestOffBudget(a);
+    return `
+      <div class="border rounded-md p-3" data-quiltt-id="${escapeHtml(a.id)}" data-connection-id="${escapeHtml(a.connectionId || '')}">
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <div class="flex-1 min-w-0">
+            <div class="font-medium">${escapeHtml(a.name || a.id)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(a.id)}</div>
+          </div>
+          <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="create" selected>Create new Actual account</option>
+            <option value="existing">Use existing Actual account</option>
+            <option value="skip">Skip</option>
+          </select>
+        </div>
 
-    if (existing) {
-      rotationRows.push(`
-        <div class="border rounded-md p-3 bg-blue-50" data-teller-id="${escapeHtml(t.id)}" data-action="rotate">
-          <div class="flex items-start justify-between gap-2">
-            <div class="flex-1">
-              <div class="font-medium">${escapeHtml(t.name || t.id)} <span class="text-xs text-blue-700">(token will be rotated)</span></div>
-              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-              <div class="text-xs font-mono text-gray-400 mt-1">Mapped to: ${escapeHtml(existing.name)} (Actual ${escapeHtml(existing.actualAccountId.slice(0, 8))}…)</div>
-            </div>
-            <label class="text-xs flex items-center gap-1">
-              <input type="checkbox" class="rotate-include" checked> rotate
+        <div class="mode-create grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+          <div class="md:col-span-7">
+            <label class="block text-xs text-gray-600 mb-1">New Actual account name</label>
+            <input type="text" class="create-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
+              value="${escapeHtml(a.name || '')}">
+          </div>
+          <div class="md:col-span-5">
+            <label class="block text-xs text-gray-600 mb-1">Type</label>
+            <label class="text-sm flex items-center gap-2">
+              <input type="checkbox" class="create-offbudget" ${offBudgetDefault ? 'checked' : ''}>
+              Off-budget account
             </label>
+            <p class="text-xs text-gray-400 mt-1">Off-budget = investments, loans. Leave unchecked for checking, savings, credit cards.</p>
           </div>
         </div>
-      `);
-    } else {
-      const offBudgetDefault = suggestOffBudget(t);
-      newRows.push(`
-        <div class="border rounded-md p-3" data-teller-id="${escapeHtml(t.id)}" data-action="create">
-          <div class="flex items-start justify-between gap-3 mb-2">
-            <div class="flex-1 min-w-0">
-              <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
-              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-              <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
-            </div>
-            <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
-              <option value="create" selected>Create new Actual account</option>
-              <option value="existing">Use existing Actual account</option>
-              <option value="skip">Skip</option>
-            </select>
-          </div>
 
-          <div class="mode-create grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
-            <div class="md:col-span-7">
-              <label class="block text-xs text-gray-600 mb-1">New Actual account name</label>
-              <input type="text" class="create-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                value="${escapeHtml(t.name || '')}">
-            </div>
-            <div class="md:col-span-5">
-              <label class="block text-xs text-gray-600 mb-1">Type</label>
-              <label class="text-sm flex items-center gap-2">
-                <input type="checkbox" class="create-offbudget" ${offBudgetDefault ? 'checked' : ''}>
-                Off-budget account
-              </label>
-              <p class="text-xs text-gray-400 mt-1">Off-budget = investments, loans. Leave unchecked for checking, savings, credit cards.</p>
-            </div>
-          </div>
-
-          <div class="mode-existing hidden">
-            <label class="block text-xs text-gray-600 mb-1">Actual Budget account</label>
-            <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
-              <option value="">— pick one —</option>
-              ${actualOptions}
-            </select>
-            <input type="text" class="map-name hidden" value="${escapeHtml(t.name || '')}">
-          </div>
+        <div class="mode-existing hidden">
+          <label class="block text-xs text-gray-600 mb-1">Actual Budget account</label>
+          <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="">— pick one —</option>
+            ${actualOptions}
+          </select>
+          <input type="text" class="map-name hidden" value="${escapeHtml(a.name || '')}">
         </div>
-      `);
-    }
+      </div>
+    `;
   });
 
   list.innerHTML = [
-    rotationRows.length ? `<div class="text-xs font-semibold text-blue-700 uppercase tracking-wide">Existing mappings — token rotation</div>` : '',
-    ...rotationRows,
-    newRows.length ? `<div class="text-xs font-semibold text-gray-700 uppercase tracking-wide pt-2">New accounts to add</div>` : '',
     ...newRows,
-  ].filter(Boolean).join('');
+    ...mappedRows,
+  ].join('');
 
   // Wire up mode toggles
-  list.querySelectorAll('[data-action="create"]').forEach(row => {
+  list.querySelectorAll('[data-quiltt-id]').forEach(row => {
     const sel = row.querySelector('.row-mode');
+    if (!sel) return;
     const createBlock = row.querySelector('.mode-create');
     const existingBlock = row.querySelector('.mode-existing');
     sel.addEventListener('change', () => {
@@ -884,69 +883,64 @@ function hideNewBankPanel() {
   const panel = document.getElementById('newBankAccountsPanel');
   panel.classList.add('hidden');
   document.getElementById('newBankAccountsList').innerHTML = '';
-  _newBankToken = null;
-  _newBankAccounts = [];
 }
 
-async function handleConnectAnotherBank() {
-  if (!window.TellerConnect || !window.TELLER_CONFIG?.applicationId) {
-    showToast('Teller Connect not loaded. Refresh the page.', 'error');
-    return;
-  }
-  if (!window.TELLER_CONFIG.applicationId.startsWith('app_')) {
-    showToast('Teller App ID is not configured. Set it under /setup first.', 'error');
-    return;
-  }
-
-  // Pre-warm Actual accounts so the dropdown is populated quickly
+// Show the account picker for a set of Quiltt accounts
+async function openAccountPicker(quilttAccounts) {
   let actualAccounts = [];
   try { actualAccounts = await fetchActualAccounts(); }
   catch (e) {
-    showToast(`Could not load Actual accounts: ${e.message}`, 'error');
+    showToast(`Could not load Actual accounts: ${e.message}. Configure Actual Budget first.`, 'error');
     return;
   }
 
-  const tc = window.TellerConnect.setup({
-    applicationId: window.TELLER_CONFIG.applicationId,
-    environment: window.TELLER_CONFIG.environment || 'sandbox',
-    selectAccount: 'multiple',
-    onSuccess: async (enrollment) => {
-      try {
-        _newBankToken = enrollment.accessToken;
-        const tellerAccounts = await fetchTellerAccountsForToken(_newBankToken);
-        _newBankAccounts = tellerAccounts;
+  const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
+  showNewBankPanel(quilttAccounts[0]?.institution);
+  renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existing);
+}
 
-        const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
-        showNewBankPanel(tellerAccounts[0]?.institution);
-        renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existing);
-      } catch (err) {
-        showToast(`Failed to load accounts: ${err.message}`, 'error');
-      }
-    },
-    onFailure: (err) => {
-      console.error('Teller Connect failed:', err);
-    },
-  });
-  tc.open();
+async function handleConnectAnotherBank() {
+  const btn = document.getElementById('connectAnotherBankBtn');
+  btn.disabled = true;
+  try {
+    const connectorId = await prepareConnector();
+    const connector = window.Quiltt.connect(connectorId, {
+      onExitSuccess: async (metadata) => {
+        showToast('Bank connected! Waiting for accounts to sync...', 'success');
+        const accounts = await pollQuilttAccountsForConnection(metadata?.connectionId);
+        await openAccountPicker(accounts);
+      },
+      onExitError: () => showToast('Connection flow failed. Try again.', 'error'),
+    });
+    connector.open();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Map accounts from already-connected banks (no new Connector flow)
+async function handleMapExistingAccounts() {
+  const btn = document.getElementById('mapExistingAccountsBtn');
+  btn.disabled = true;
+  try {
+    const accounts = await fetchQuilttAccounts();
+    await openAccountPicker(accounts);
+  } catch (error) {
+    showToast(`Could not load Quiltt accounts: ${error.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function handleSaveNewBankMappings() {
-  if (!_newBankToken || _newBankAccounts.length === 0) {
-    showToast('No bank connection to save.', 'error');
-    return;
-  }
-  const rows = document.querySelectorAll('#newBankAccountsList [data-teller-id]');
-  const plans = [];        // [{ tellerAccountId, mode, ...modeFields }]
-  const toRotate = [];
+  const rows = document.querySelectorAll('#newBankAccountsList [data-quiltt-id]');
+  const plans = [];
 
   rows.forEach(row => {
-    const tellerAccountId = row.dataset.tellerId;
-    const action = row.dataset.action;
-    if (action === 'rotate') {
-      const cb = row.querySelector('.rotate-include');
-      if (cb && cb.checked) toRotate.push(tellerAccountId);
-      return;
-    }
+    const quilttAccountId = row.dataset.quilttId;
+    const connectionId = row.dataset.connectionId || undefined;
     const mode = row.dataset.mode || 'create';
     if (mode === 'skip') return;
 
@@ -954,44 +948,27 @@ async function handleSaveNewBankMappings() {
       const name = (row.querySelector('.create-name')?.value || '').trim();
       const offbudget = !!row.querySelector('.create-offbudget')?.checked;
       if (!name) return;
-      plans.push({ tellerAccountId, mode: 'create', name, offbudget });
+      plans.push({ quilttAccountId, connectionId, mode: 'create', name, offbudget });
     } else if (mode === 'existing') {
       const actualAccountId = row.querySelector('.map-actual')?.value;
       const name = (row.querySelector('.map-name')?.value || '').trim();
       if (!actualAccountId) return;
-      plans.push({ tellerAccountId, mode: 'existing', name, actualAccountId });
+      plans.push({ quilttAccountId, connectionId, mode: 'existing', name, actualAccountId });
     }
   });
 
-  if (plans.length === 0 && toRotate.length === 0) {
-    showToast('Nothing to save. Pick at least one account or rotation.', 'error');
+  if (plans.length === 0) {
+    showToast('Nothing to save. Pick at least one account.', 'error');
     return;
   }
 
   setSaveBusy(true);
-  let rotated = 0, created = 0, accountsCreated = 0, failed = 0;
+  let created = 0, accountsCreated = 0, failed = 0;
 
   try {
-    // 1. Rotate tokens first so existing mappings come back online quickly
-    if (toRotate.length > 0) {
-      try {
-        const res = await fetch('/api/mappings/rotate-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ newAccessToken: _newBankToken, tellerAccountIds: toRotate }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Rotation failed');
-        rotated = data.rotated;
-      } catch (err) {
-        console.error('Rotation failed:', err);
-        failed += toRotate.length;
-      }
-    }
-
-    // 2. For each plan: ensure we have an Actual account ID, then create the mapping.
-    //    For newly-created accounts, mark pendingReconcile so the next sync auto-balances
-    //    against Teller's reported balance.
+    // For each plan: ensure we have an Actual account ID, then create the mapping.
+    // For newly-created accounts, mark pendingReconcile so the next sync auto-balances
+    // against the bank's reported balance.
     for (const p of plans) {
       try {
         let actualAccountId = p.actualAccountId;
@@ -1014,9 +991,9 @@ async function handleSaveNewBankMappings() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: p.name,
-            tellerAccountId: p.tellerAccountId,
+            quilttAccountId: p.quilttAccountId,
+            connectionId: p.connectionId,
             actualAccountId,
-            tellerAccessToken: _newBankToken,
             pendingReconcile: needsReconcile,
           }),
         });
@@ -1024,7 +1001,7 @@ async function handleSaveNewBankMappings() {
         if (!mRes.ok) throw new Error(mData.error || 'Mapping save failed');
         created++;
       } catch (err) {
-        console.error('Failed to add mapping for', p.tellerAccountId, err);
+        console.error('Failed to add mapping for', p.quilttAccountId, err);
         failed++;
       }
     }
@@ -1033,7 +1010,6 @@ async function handleSaveNewBankMappings() {
   }
 
   const parts = [];
-  if (rotated) parts.push(`rotated ${rotated} token${rotated === 1 ? '' : 's'}`);
   if (accountsCreated) parts.push(`created ${accountsCreated} Actual account${accountsCreated === 1 ? '' : 's'}`);
   if (created) parts.push(`added ${created} mapping${created === 1 ? '' : 's'}`);
   if (failed) parts.push(`${failed} failed`);
@@ -1054,6 +1030,7 @@ function setSaveBusy(busy) {
 }
 
 document.getElementById('connectAnotherBankBtn')?.addEventListener('click', handleConnectAnotherBank);
+document.getElementById('mapExistingAccountsBtn')?.addEventListener('click', handleMapExistingAccounts);
 document.getElementById('newBankCancelBtn')?.addEventListener('click', hideNewBankPanel);
 document.getElementById('newBankSaveBtn')?.addEventListener('click', handleSaveNewBankMappings);
 
