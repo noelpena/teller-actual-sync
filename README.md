@@ -1,5 +1,11 @@
 # Teller → Actual Budget Sync
 
+> ## ⚠️ This project no longer works — Teller has discontinued its API service
+>
+> Teller shut down the API this project depends on, so **syncs will fail and new bank connections cannot be created**. No configuration change can fix this.
+>
+> A replacement using a different bank data provider is in the works and will become v2.0 of this project.
+
 Automated Docker container that syncs bank transactions from Teller to Actual Budget. Perfect for homelabbers running CasaOS or any Docker environment.
 
 ## ✨ Features
