@@ -90,6 +90,8 @@ async function initActual() {
     throw new Error("Actual Budget serverURL and password are required");
   }
 
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
   await actual.init({ dataDir, serverURL, password });
 
   // Only download budget if syncId is provided
@@ -575,7 +577,9 @@ app.post("/api/setup/save-actual", (req, res) => {
     const newConfig = {
       ...existingConfig,
       actual: {
-        dataDir: process.env.ACTUAL_DATA_DIR || "/app/actual-data",
+        // dataDir is resolved at load time (local dir, or /app/actual-data in
+        // Docker); only persist an explicit override
+        ...(process.env.ACTUAL_DATA_DIR ? { dataDir: process.env.ACTUAL_DATA_DIR } : {}),
         serverURL,
         password,
         syncId,
@@ -696,6 +700,9 @@ async function ensureActualReady() {
   const config = loadConfig();
   if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
     throw new Error("Actual Budget is not configured (serverURL/password/syncId)");
+  }
+  if (!fs.existsSync(config.actual.dataDir)) {
+    fs.mkdirSync(config.actual.dataDir, { recursive: true });
   }
   try {
     await actual.init({
@@ -917,7 +924,7 @@ app.post("/admin/api/config", (req, res) => {
         daysRequested: parseInt(req.body.PLAID_DAYS_REQUESTED) || existingConfig.plaid?.daysRequested || 90,
       },
       actual: {
-        dataDir: process.env.ACTUAL_DATA_DIR || "/app/actual-data",
+        ...(process.env.ACTUAL_DATA_DIR ? { dataDir: process.env.ACTUAL_DATA_DIR } : {}),
         serverURL: req.body.ACTUAL_SERVER_URL,
         password: req.body.ACTUAL_PASSWORD || existingConfig.actual?.password,
         syncId: req.body.ACTUAL_SYNC_ID,

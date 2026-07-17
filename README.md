@@ -221,6 +221,19 @@ The limit is lifetime (removals don't refund). Upgrade to Plaid's Pay-as-you-go 
 - Verify the server URL is reachable **from inside the container** (use container-network hostnames, not `localhost`)
 - Confirm the password and Sync ID
 
+### "SQLITE_CORRUPT" / "malformed database schema" / "No budget file is open"
+
+The `@actual-app/api` package version must **match your Actual server version** — a newer
+SDK migrating a budget file from an older server can corrupt the local copy. Check your
+server version (`http://your-server:5006/info`), then pin the match:
+
+```bash
+npm install @actual-app/api@<your-server-version>   # e.g. @25.8.0
+```
+
+Then delete the cached budget folder inside `actual-data/` and restart. (Or upgrade the
+server itself and keep the SDK on latest.)
+
 ### View detailed logs
 
 ```bash

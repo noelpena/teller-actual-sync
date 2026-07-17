@@ -16,6 +16,17 @@ function newMappingId() {
   return "m_" + crypto.randomBytes(6).toString("hex");
 }
 
+// Resolve the Actual data directory. Inside Docker the app lives at /app, so
+// the local default (<repo>/actual-data) IS /app/actual-data. Configs written
+// by older versions hardcoded the Docker path — when that path doesn't exist
+// (e.g. running `npm run dev` on Windows/macOS), fall back to the local dir.
+function resolveDataDir(configured) {
+  const localDefault = path.join(__dirname, "actual-data");
+  const dir = configured || process.env.ACTUAL_DATA_DIR || localDefault;
+  if (dir === "/app/actual-data" && !fs.existsSync(dir)) return localDefault;
+  return dir;
+}
+
 // Load config from file or env vars.
 // - plaid: API credentials + environment
 // - items: one entry per Plaid Item (bank connection); holds the access token
@@ -54,7 +65,7 @@ function loadConfig() {
     },
     items: Array.isArray(fileConfig.items) ? fileConfig.items.slice() : [],
     actual: {
-      dataDir: fileConfig.actual?.dataDir || process.env.ACTUAL_DATA_DIR || "/app/actual-data",
+      dataDir: resolveDataDir(fileConfig.actual?.dataDir),
       serverURL: fileConfig.actual?.serverURL || process.env.ACTUAL_SERVER_URL,
       password: fileConfig.actual?.password || process.env.ACTUAL_PASSWORD,
       syncId: fileConfig.actual?.syncId || process.env.ACTUAL_SYNC_ID,
@@ -193,6 +204,10 @@ function normalizedBankBalance(plaidAccount) {
 // Initialize Actual Budget (download budget once, used across all items)
 async function initActual(config) {
   try { await actual.shutdown(); } catch (_) {}
+
+  if (!fs.existsSync(config.actual.dataDir)) {
+    fs.mkdirSync(config.actual.dataDir, { recursive: true });
+  }
 
   await actual.init({
     dataDir: config.actual.dataDir,
