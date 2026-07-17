@@ -95,6 +95,11 @@ Each sync run, per bank connection (Plaid "Item"):
 
 ## 🐳 Docker Deployment
 
+> **Build from source.** There is no published Plaid image yet — the
+> `noelpena/teller-actual-sync` image on Docker Hub is still the old Teller v1.
+> [docker-compose.yml](docker-compose.yml) is configured to build locally, so
+> `docker compose up -d --build` is all you need.
+
 ### Using Docker Compose (Recommended)
 
 See [docker-compose.yml](docker-compose.yml). Volumes persist config, logs, transaction backups, and Actual's data cache:
@@ -107,9 +112,18 @@ volumes:
   - ./actual-data:/app/actual-data
 ```
 
+```bash
+git clone -b plaid-migration https://github.com/noelpena/teller-actual-sync.git
+cd teller-actual-sync
+docker compose up -d --build
+```
+
 ### Using Docker Run
 
+Build the image first, then run it:
+
 ```bash
+docker build -t plaid-actual-sync:local .
 docker run -d \
   --name plaid-actual-sync \
   -p 8001:8001 \
@@ -118,7 +132,7 @@ docker run -d \
   -v $(pwd)/transaction-data:/app/transaction-data \
   -v $(pwd)/actual-data:/app/actual-data \
   -e TZ=America/New_York \
-  noelpena/teller-actual-sync:latest
+  plaid-actual-sync:local
 ```
 
 ## 🔧 Configuration
@@ -179,13 +193,24 @@ When a bank login breaks (changed password, expired MFA), the connection and its
 
 ## 🏠 CasaOS Installation
 
-Import [docker-compose.yml](docker-compose.yml) through CasaOS's **Install a customized app** — the `x-casaos` metadata auto-configures the web UI port and icon.
+Because the image is built from source (no published Plaid image yet), build it
+on the CasaOS host over SSH rather than importing through the app store:
+
+```bash
+git clone -b plaid-migration https://github.com/noelpena/teller-actual-sync.git
+cd teller-actual-sync
+docker compose up -d --build
+```
+
+CasaOS auto-detects the running container and shows it on the dashboard. The
+`x-casaos` metadata in the compose file (web UI port, icon) applies if you later
+publish an image and import it through **Install a customized app**.
 
 ## 🔄 Migrating from Teller (v1.x)
 
 Teller account IDs and access tokens have no Plaid equivalent, so mappings can't be carried over — but your Actual accounts and history are untouched:
 
-1. Update to the v2 image and restart
+1. Pull the v2 source and rebuild (`git pull && docker compose up -d --build`)
 2. Go to `/connect`, enter Plaid credentials, and link each bank
 3. In **Account Mappings**, map each bank account to its **existing** Actual account (pick "Use existing Actual account" — don't create duplicates)
 4. Old Teller mappings are ignored by the sync; delete them from the mappings list when ready
@@ -224,15 +249,19 @@ The limit is lifetime (removals don't refund). Upgrade to Plaid's Pay-as-you-go 
 ### "SQLITE_CORRUPT" / "malformed database schema" / "No budget file is open"
 
 The `@actual-app/api` package version must **match your Actual server version** — a newer
-SDK migrating a budget file from an older server can corrupt the local copy. Check your
-server version (`http://your-server:5006/info`), then pin the match:
+SDK migrating a budget file from an older server can corrupt the local copy. This project
+pins it in [package.json](package.json) (currently `^26.7.0`). Check your server version:
 
 ```bash
-npm install @actual-app/api@<your-server-version>   # e.g. @25.8.0
+curl https://your-actual-server/info      # look at build.version
 ```
 
-Then delete the cached budget folder inside `actual-data/` and restart. (Or upgrade the
-server itself and keep the SDK on latest.)
+If it differs, edit the `@actual-app/api` line in `package.json` to match, then rebuild
+(`docker compose up -d --build`) and delete the cached budget folder inside `actual-data/`.
+
+> **Hosted Actual (PikaPods, Fly.io, etc.)** auto-updates, so its version can drift ahead of
+> the pin over time. If a sync starts failing with SQLITE errors after a while, re-check
+> `/info` and bump the pin.
 
 ### View detailed logs
 
