@@ -1,11 +1,10 @@
 services:
   plaid-actual-sync:
-    # Option 1: Use the pre-built image from Docker Hub (recommended)
-    image: noelpena/teller-actual-sync:latest
-
-    # Option 2: Build locally from source
-    # Comment out the 'image:' line above and uncomment the line below.
-    # build: .
+    # Build from source. The image on Docker Hub
+    # (noelpena/teller-actual-sync:latest) is still the OLD Teller v1 — do not
+    # use it. Build the Plaid version locally:  docker compose up -d --build
+    build: .
+    image: plaid-actual-sync:local
 
     container_name: plaid-actual-sync
     restart: always
