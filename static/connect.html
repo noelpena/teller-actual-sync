@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Connect Your Bank - Quiltt-Actual Sync</title>
+  <title>Connect Your Bank - Plaid-Actual Sync</title>
   <script>
-    window.QUILTT_CONFIG = {
-      connectorId: "{{ connector_id }}",
+    window.PLAID_CONFIG = {
+      env: "{{ plaid_env }}",
       hasCredentials: {{ has_credentials }}
     };
   </script>
-  <script src="https://cdn.quiltt.io/v1/connector.js"></script>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -34,7 +34,7 @@
     p { color: #666; margin-bottom: 20px; line-height: 1.6; }
     .form-group { margin-bottom: 20px; }
     label { display: block; font-weight: 600; margin-bottom: 8px; color: #444; }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], input[type="number"], select {
       width: 100%;
       padding: 12px;
       border: 2px solid #e0e0e0;
@@ -42,7 +42,7 @@
       font-size: 1rem;
       transition: border-color 0.2s;
     }
-    input:focus { outline: none; border-color: #667eea; }
+    input:focus, select:focus { outline: none; border-color: #667eea; }
     .help-text { font-size: 0.85rem; color: #999; margin-top: 5px; }
     .help-text a { color: #667eea; text-decoration: none; }
     .help-text a:hover { text-decoration: underline; }
@@ -55,6 +55,26 @@
     }
     .info-box strong { display: block; margin-bottom: 5px; color: #1976D2; }
     .info-box p { margin: 0; font-size: 0.9rem; color: #555; }
+    .warn-box {
+      background: #fff8e1;
+      border-left: 4px solid #f59e0b;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      color: #664d03;
+    }
+    .env-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
+    .env-badge.sandbox { background: #e0f2fe; color: #075985; }
+    .env-badge.production { background: #dcfce7; color: #14532d; }
     .btn {
       width: 100%;
       padding: 14px;
@@ -95,59 +115,63 @@
     }
     .account-item .name { font-weight: 600; color: #333; }
     .account-item .meta { font-size: 0.85rem; color: #888; }
-    .account-item .balance { font-family: monospace; color: #333; }
-    .spinner {
-      border: 3px solid #f3f4f6;
-      border-top: 3px solid #667eea;
-      border-radius: 50%;
-      width: 28px;
-      height: 28px;
-      animation: spin 1s linear infinite;
-      margin: 20px auto;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
     .links { margin-top: 20px; text-align: center; font-size: 0.9rem; }
     .links a { color: #667eea; text-decoration: none; margin: 0 8px; }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- Step 1: Quiltt credentials (shown when API secret / Connector ID missing) -->
+    <!-- Step 1: Plaid credentials (shown when client ID / secret missing) -->
     <div id="credentials-step" class="hidden">
-      <h1>🧵 Quiltt Setup</h1>
-      <p>Configure your Quiltt credentials before linking your bank account.</p>
+      <h1>🔑 Plaid Setup</h1>
+      <p>Configure your Plaid API credentials before linking your bank account.</p>
 
       <div class="info-box">
         <strong>Where do I get these?</strong>
         <p>
-          Sign up at the <a href="https://dashboard.quiltt.dev" target="_blank">Quiltt Dashboard</a>,
-          create an Environment, copy your <em>API Key secret</em>, then create a
-          <em>Connector</em> and copy its ID. No mTLS certificates needed.
+          Sign up at the <a href="https://dashboard.plaid.com/signup" target="_blank">Plaid Dashboard</a>
+          (free Trial plan). Your <em>client ID</em> and per-environment <em>secrets</em> are under
+          Developers → Keys.
         </p>
       </div>
 
       <form id="credentialsForm">
         <div class="form-group">
-          <label for="apiSecret">Quiltt API Key Secret</label>
-          <input type="password" id="apiSecret" placeholder="sk_..." autocomplete="off" required>
-          <div class="help-text">Dashboard → Environment → API Keys</div>
+          <label for="clientId">Client ID</label>
+          <input type="text" id="clientId" autocomplete="off" required>
         </div>
         <div class="form-group">
-          <label for="connectorId">Connector ID</label>
-          <input type="text" id="connectorId" placeholder="e.g. abc123xyz" autocomplete="off" required>
-          <div class="help-text">Dashboard → Connectors → your Connector → ID</div>
+          <label for="secret">Secret</label>
+          <input type="password" id="secret" autocomplete="off" required>
+          <div class="help-text">Use the secret matching the environment you pick below</div>
+        </div>
+        <div class="form-group">
+          <label for="env">Environment</label>
+          <select id="env">
+            <option value="sandbox" selected>Sandbox (test banks, fake data)</option>
+            <option value="production">Production (real banks — uses Trial plan Item slots)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="daysRequested">Transaction history to request (days)</label>
+          <input type="number" id="daysRequested" value="90" min="30" max="730">
+          <div class="help-text">30–730. Set at link time — more history = slower first sync</div>
         </div>
         <button type="submit" class="btn" id="credentialsBtn">Save &amp; Continue</button>
       </form>
     </div>
 
-    <!-- Step 2: launch the Quiltt Connector -->
+    <!-- Step 2: launch Plaid Link -->
     <div id="connect-step" class="hidden">
-      <h1>🏦 Connect Your Bank</h1>
+      <h1>🏦 Connect Your Bank<span id="envBadge" class="env-badge"></span></h1>
       <p>
-        Securely link a bank account through Quiltt. Your credentials are never
-        stored by this app — only account IDs used for syncing.
+        Securely link a bank account through Plaid. Your bank credentials go to
+        Plaid, never to this app — only account IDs are stored here.
       </p>
+      <div id="trialWarning" class="warn-box hidden">
+        ⚠️ <strong>Production:</strong> the free Trial plan allows <strong>10 bank connections, lifetime</strong>
+        — removing one does not free the slot. Test in Sandbox first.
+      </div>
       <button type="button" class="btn" id="connectBtn">Connect Bank Account</button>
       <div class="links">
         <a href="/setup">Skip to Actual Budget setup →</a>
@@ -155,13 +179,11 @@
       </div>
     </div>
 
-    <!-- Step 3: connection success — show accounts, continue -->
+    <!-- Step 3: success — show linked accounts, continue -->
     <div id="success-step" class="hidden">
       <h1>🎉 Bank Connected!</h1>
-      <p>Quiltt is syncing your accounts. Accounts found on this connection:</p>
-      <div id="accountList" class="account-list">
-        <div class="spinner"></div>
-      </div>
+      <p id="successSubtitle">Accounts on this connection:</p>
+      <div id="accountList" class="account-list"></div>
       <button type="button" class="btn" id="continueBtn">Continue →</button>
       <button type="button" class="btn btn-secondary" id="connectAnotherBtn">Connect Another Bank</button>
     </div>

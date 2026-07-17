@@ -11,16 +11,19 @@ import {
   runSyncForMapping,
   loadConfig,
   saveMappings,
-  saveQuilttConfig,
+  saveItems,
+  savePlaidConfig,
   updateMappingState,
+  updateItemState,
   newMappingId,
 } from "./sync.js";
 import {
-  issueSessionToken,
-  testApiSecret,
-  fetchAccounts,
-  connectionNeedsRepair,
-} from "./quiltt.js";
+  PlaidApiError,
+  createLinkToken,
+  exchangePublicToken,
+  getAccounts,
+  removeItem,
+} from "./plaid.js";
 
 dotenv.config();
 
@@ -29,6 +32,10 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 8001;
 const staticDir = path.join(__dirname, "static");
+
+// Plaid Trial plan allows 10 Production Items — LIFETIME (removal doesn't
+// refund slots). Surfaced in the admin UI so slots aren't burned by accident.
+const TRIAL_ITEM_LIMIT = 10;
 
 const app = express();
 app.use(cors(), express.json({ limit: '50mb' }));
@@ -39,9 +46,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 function checkConfigStatus() {
   const config = loadConfig();
 
-  // Quiltt credentials (API secret + Connector ID from the Quiltt Dashboard)
-  const hasQuilttCredentials = Boolean(config.quiltt?.apiSecret && config.quiltt?.connectorId);
-  const hasProfile = Boolean(config.quiltt?.profileId);
+  const hasPlaidCredentials = Boolean(config.plaid?.clientId && config.plaid?.secret);
+  const itemsById = new Set((config.items || []).map(it => it.itemId));
 
   // Actual server-level config (shared across all mappings)
   const hasActualConfig = Boolean(
@@ -53,20 +59,23 @@ function checkConfigStatus() {
     config.actual.syncId.match(UUID_RE)
   );
 
-  // At least one fully-formed mapping
+  // At least one fully-formed mapping tied to a known Item
   const validMappings = (config.mappings || []).filter(m =>
-    m.quilttAccountId && m.quilttAccountId.startsWith('acct_') &&
+    m.plaidAccountId && typeof m.plaidAccountId === "string" && m.plaidAccountId.length >= 10 &&
+    m.itemId && itemsById.has(m.itemId) &&
     m.actualAccountId && UUID_RE.test(m.actualAccountId)
   );
 
-  const hasQuilttConfig = hasQuilttCredentials && hasProfile && validMappings.length > 0;
+  const hasPlaidConfig = hasPlaidCredentials && validMappings.length > 0;
 
   return {
-    hasQuilttCredentials,
-    hasProfile,
-    hasQuilttConfig,
+    hasPlaidCredentials,
+    hasPlaidConfig,
     hasActualConfig,
-    isComplete: hasQuilttConfig && hasActualConfig,
+    isComplete: hasPlaidConfig && hasActualConfig,
+    plaidEnv: config.plaid?.env || "sandbox",
+    itemCount: (config.items || []).length,
+    itemLimit: TRIAL_ITEM_LIMIT,
     mappingCount: (config.mappings || []).length,
     validMappingCount: validMappings.length
   };
@@ -124,25 +133,28 @@ function errMsg(err) {
 
 // ===== SETUP & STATUS API =====
 
-// Save Quiltt credentials (API secret + Connector ID from the Quiltt Dashboard)
-app.post("/api/setup/save-quiltt", (req, res) => {
+// Save Plaid credentials (client ID + secret from the Plaid Dashboard)
+app.post("/api/setup/save-plaid", (req, res) => {
   try {
-    const { apiSecret, connectorId } = req.body;
+    const { clientId, secret, env, daysRequested } = req.body;
 
-    if (!apiSecret && !connectorId) {
-      return res.status(400).json({ error: "Provide apiSecret and/or connectorId" });
+    if (!clientId && !secret && !env && !daysRequested) {
+      return res.status(400).json({ error: "Provide at least one of: clientId, secret, env, daysRequested" });
+    }
+    if (env && !["sandbox", "production"].includes(env)) {
+      return res.status(400).json({ error: "env must be 'sandbox' or 'production'" });
+    }
+    const days = daysRequested === undefined ? undefined : parseInt(daysRequested);
+    if (days !== undefined && (!Number.isFinite(days) || days < 30 || days > 730)) {
+      return res.status(400).json({ error: "daysRequested must be between 30 and 730" });
     }
 
-    const quiltt = saveQuilttConfig({ apiSecret, connectorId });
-    console.log("✅ Quiltt credentials saved to config.json");
+    savePlaidConfig({ clientId, secret, env, daysRequested: days });
+    console.log("✅ Plaid credentials saved to config.json");
 
-    res.json({
-      success: true,
-      message: "Quiltt configuration saved",
-      connectorId: quiltt.connectorId || null,
-    });
+    res.json({ success: true, message: "Plaid configuration saved" });
   } catch (error) {
-    console.error("Error saving Quiltt configuration:", error);
+    console.error("Error saving Plaid configuration:", error);
     res.status(500).json({ error: errMsg(error) });
   }
 });
@@ -157,104 +169,227 @@ app.get("/api/config/status", (req, res) => {
   }
 });
 
-// ===== QUILTT API =====
+// ===== PLAID API =====
 
-// Issue a Session token for launching the Quiltt Connector in the browser.
-// First call creates the (single, household) Profile and persists its ID.
-app.post("/api/quiltt/session", async (req, res) => {
+// Create a Link token. Body: {} for a new connection, { itemId } for update
+// mode (repairing a broken Item — its access_token is reused, no new Item slot).
+app.post("/api/plaid/link-token", async (req, res) => {
   try {
     const config = loadConfig();
-    if (!config.quiltt.apiSecret) {
-      return res.status(400).json({ error: "Quiltt API secret is not configured" });
+    if (!config.plaid.clientId || !config.plaid.secret) {
+      return res.status(400).json({ error: "Plaid is not configured yet" });
     }
 
-    const session = await issueSessionToken({
-      apiSecret: config.quiltt.apiSecret,
-      profileId: config.quiltt.profileId,
-    });
-
-    // Persist the auto-created profile so every future session reuses it
-    if (!config.quiltt.profileId && session.profileId) {
-      saveQuilttConfig({ profileId: session.profileId });
-      console.log(`✅ Quiltt profile created and saved: ${session.profileId}`);
+    let accessToken;
+    const { itemId } = req.body || {};
+    if (itemId) {
+      const item = config.items.find(it => it.itemId === itemId);
+      if (!item) return res.status(404).json({ error: `Item not found: ${itemId}` });
+      accessToken = item.accessToken;
     }
 
-    res.json({
-      token: session.token,
-      profileId: session.profileId,
-      expiresAt: session.expiresAt,
-      connectorId: config.quiltt.connectorId || null,
-    });
+    const { linkToken, expiration } = await createLinkToken(config.plaid, { accessToken });
+    res.json({ linkToken, expiration, updateMode: !!accessToken, env: config.plaid.env });
   } catch (error) {
-    console.error("Error issuing Quiltt session:", error);
+    console.error("Error creating link token:", error);
     res.status(500).json({ error: errMsg(error) });
   }
 });
 
-// List all Quiltt accounts on the profile (for mapping pickers)
-app.get("/api/quiltt/accounts", async (req, res) => {
+// Exchange Link's public_token and store the new Item.
+// Body: { publicToken, institution?, accounts? } (institution/accounts from Link metadata)
+app.post("/api/plaid/exchange", async (req, res) => {
   try {
-    const config = loadConfig();
-    if (!config.quiltt.apiSecret || !config.quiltt.profileId) {
-      return res.status(400).json({ error: "Quiltt is not configured yet. Connect a bank first." });
-    }
+    const { publicToken, institution } = req.body;
+    if (!publicToken) return res.status(400).json({ error: "Missing publicToken" });
 
-    const accounts = await fetchAccounts({ quiltt: config.quiltt });
-    res.json({
-      accounts: accounts.map(a => ({
-        ...a,
-        needsRepair: connectionNeedsRepair(a.connectionStatus),
-      })),
-    });
+    const config = loadConfig();
+    const { accessToken, itemId } = await exchangePublicToken(config.plaid, publicToken);
+
+    const items = config.items.slice();
+    const existing = items.find(it => it.itemId === itemId);
+    if (existing) {
+      // Shouldn't normally happen (update mode doesn't re-exchange), but be safe
+      existing.accessToken = accessToken;
+      existing.needsReconnect = false;
+      existing.lastError = null;
+    } else {
+      items.push({
+        itemId,
+        accessToken,
+        institution: institution || null,
+        cursor: null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    saveItems(items);
+    console.log(`✅ Plaid Item stored: ${itemId} (${institution || "unknown institution"})`);
+
+    res.json({ success: true, itemId, itemCount: items.length, itemLimit: TRIAL_ITEM_LIMIT });
   } catch (error) {
-    console.error("Error listing Quiltt accounts:", error);
-    res.status(500).json({ error: errMsg(error), isAuth: error?.name === "QuilttAuthError" });
+    console.error("Error exchanging public token:", error);
+    res.status(500).json({ error: errMsg(error) });
   }
 });
 
-// Test Quiltt API connection
-app.post("/api/test/quiltt", async (req, res) => {
+// List all Plaid accounts across Items (for mapping pickers).
+// Items whose bank login broke are still listed, flagged needsReconnect.
+app.get("/api/plaid/accounts", async (req, res) => {
   try {
     const config = loadConfig();
-    if (!config.quiltt.apiSecret) {
-      return res.status(400).json({ error: "Quiltt API secret is not configured" });
+    if (!config.plaid.clientId || !config.plaid.secret) {
+      return res.status(400).json({ error: "Plaid is not configured yet" });
     }
 
-    const result = await testApiSecret(config.quiltt.apiSecret);
-    if (!result.ok) {
-      return res.status(500).json({ success: false, error: result.error });
+    const accounts = [];
+    const brokenItems = [];
+    for (const item of config.items) {
+      try {
+        const { accounts: itemAccounts } = await getAccounts(config.plaid, item.accessToken);
+        for (const a of itemAccounts) {
+          accounts.push({
+            plaidAccountId: a.account_id,
+            name: a.name,
+            officialName: a.official_name || null,
+            mask: a.mask || null,
+            type: a.type,
+            subtype: a.subtype,
+            balance: a.balances?.current ?? a.balances?.available ?? null,
+            itemId: item.itemId,
+            institution: item.institution || null,
+            needsReconnect: !!item.needsReconnect,
+          });
+        }
+      } catch (err) {
+        const needsReconnect = err instanceof PlaidApiError && err.needsReconnect;
+        if (needsReconnect) updateItemState(item.itemId, { needsReconnect: true, lastError: errMsg(err) });
+        brokenItems.push({ itemId: item.itemId, institution: item.institution, error: errMsg(err), needsReconnect });
+      }
     }
 
-    // If a profile exists, also verify profile-scoped GraphQL access
-    let accountCount = null;
-    if (config.quiltt.profileId) {
-      const accounts = await fetchAccounts({ quiltt: config.quiltt });
-      accountCount = accounts.length;
-    }
+    res.json({ accounts, brokenItems, itemCount: config.items.length, itemLimit: TRIAL_ITEM_LIMIT });
+  } catch (error) {
+    console.error("Error listing Plaid accounts:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
 
+// List stored Items (tokens masked)
+app.get("/api/plaid/items", (req, res) => {
+  try {
+    const config = loadConfig();
     res.json({
-      success: true,
-      message: "Successfully connected to Quiltt API",
-      profileId: config.quiltt.profileId || null,
-      accountCount,
+      items: (config.items || []).map(it => ({
+        itemId: it.itemId,
+        institution: it.institution || null,
+        needsReconnect: !!it.needsReconnect,
+        createdAt: it.createdAt || null,
+        lastSyncedAt: it.lastSyncedAt || null,
+        lastError: it.lastError || null,
+        hasCursor: !!it.cursor,
+        mappingCount: (config.mappings || []).filter(m => m.itemId === it.itemId).length,
+      })),
+      itemCount: (config.items || []).length,
+      itemLimit: TRIAL_ITEM_LIMIT,
     });
   } catch (error) {
-    console.error("Quiltt API test failed:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
+
+// Permanently disconnect an Item. WARNING: on the Trial plan this does NOT
+// free up an Item slot. Its mappings are disabled, not deleted.
+app.post("/api/plaid/items/:itemId/remove", async (req, res) => {
+  try {
+    const config = loadConfig();
+    const item = config.items.find(it => it.itemId === req.params.itemId);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    try {
+      await removeItem(config.plaid, item.accessToken);
+    } catch (err) {
+      // Item may already be dead upstream — still drop it locally
+      console.warn(`/item/remove failed (continuing with local removal): ${errMsg(err)}`);
+    }
+
+    saveItems(config.items.filter(it => it.itemId !== item.itemId));
+
+    let disabledCount = 0;
+    const mappings = config.mappings.map(m => {
+      if (m.itemId === item.itemId && !m.disabled) {
+        disabledCount++;
+        return { ...m, disabled: true, lastError: "Bank connection removed" };
+      }
+      return m;
+    });
+    saveMappings(mappings);
+
+    res.json({ success: true, removed: item.itemId, mappingsDisabled: disabledCount });
+  } catch (error) {
+    console.error("Error removing item:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
+
+// Clear needsReconnect after a successful Link update-mode repair
+app.post("/api/plaid/items/:itemId/reconnected", (req, res) => {
+  try {
+    const config = loadConfig();
+    const item = config.items.find(it => it.itemId === req.params.itemId);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    updateItemState(item.itemId, { needsReconnect: false, lastError: null });
+    let cleared = 0;
+    const mappings = config.mappings.map(m => {
+      if (m.itemId === item.itemId && m.needsReconnect) {
+        cleared++;
+        return { ...m, needsReconnect: false, lastError: null };
+      }
+      return m;
+    });
+    saveMappings(mappings);
+    res.json({ success: true, cleared });
+  } catch (error) {
+    console.error("Error clearing reconnect flags:", error);
+    res.status(500).json({ error: errMsg(error) });
+  }
+});
+
+// Test Plaid API connection (creating a link token validates credentials; free)
+app.post("/api/test/plaid", async (req, res) => {
+  try {
+    const config = loadConfig();
+    if (!config.plaid.clientId || !config.plaid.secret) {
+      return res.status(400).json({ error: "Plaid is not configured" });
+    }
+
+    await createLinkToken(config.plaid);
+    res.json({
+      success: true,
+      message: `Successfully connected to Plaid (${config.plaid.env})`,
+      env: config.plaid.env,
+      itemCount: (config.items || []).length,
+      itemLimit: TRIAL_ITEM_LIMIT,
+    });
+  } catch (error) {
+    console.error("Plaid API test failed:", error);
     res.status(500).json({ success: false, error: errMsg(error) });
   }
 });
 
 // ===== Account mappings API =====
-// Each mapping = one Quiltt account paired with one Actual account.
+// Each mapping = one Plaid account paired with one Actual account.
 
 app.get("/api/mappings", (req, res) => {
   try {
     const config = loadConfig();
+    const institutionByItem = new Map((config.items || []).map(it => [it.itemId, it.institution]));
     const safe = (config.mappings || []).map(m => ({
       id: m.id,
       name: m.name || "",
-      connectionId: m.connectionId || null,
-      quilttAccountId: m.quilttAccountId,
+      itemId: m.itemId || null,
+      institution: institutionByItem.get(m.itemId) || null,
+      plaidAccountId: m.plaidAccountId,
       actualAccountId: m.actualAccountId,
       disabled: !!m.disabled,
       needsReconnect: !!m.needsReconnect,
@@ -316,7 +451,7 @@ app.post("/api/mappings/:id/reconcile", async (req, res) => {
   }
 });
 
-// Trigger a sync for a single mapping
+// Trigger a sync for a single mapping (syncs its whole Item — shared cursor)
 app.post("/api/mappings/:id/sync", async (req, res) => {
   try {
     const stats = await runSyncForMapping(req.params.id);
@@ -325,59 +460,33 @@ app.post("/api/mappings/:id/sync", async (req, res) => {
     res.status(500).json({
       success: false,
       error: errMsg(error),
-      isAuth: error?.name === "QuilttAuthError",
+      isAuth: !!error?.needsReconnect,
     });
-  }
-});
-
-// Clear the needsReconnect flag for all mappings on a connection.
-// Called after a successful Connector reconnect flow.
-app.post("/api/mappings/reconnected", (req, res) => {
-  try {
-    const { connectionId } = req.body;
-    if (!connectionId || !connectionId.startsWith("conn_")) {
-      return res.status(400).json({ error: "Missing/invalid connectionId" });
-    }
-
-    const config = loadConfig();
-    let cleared = 0;
-    const mappings = config.mappings.map(m => {
-      if (m.connectionId === connectionId && m.needsReconnect) {
-        cleared++;
-        return { ...m, needsReconnect: false, lastError: null };
-      }
-      return m;
-    });
-    saveMappings(mappings);
-    res.json({ success: true, cleared });
-  } catch (error) {
-    console.error("Error clearing reconnect flags:", error);
-    res.status(500).json({ error: errMsg(error) });
   }
 });
 
 // Create or update a mapping. If body.id is set and matches an existing mapping, update.
-// Otherwise create a new one.
 app.post("/api/mappings", (req, res) => {
   try {
-    const { id, name, connectionId, quilttAccountId, actualAccountId, pendingReconcile } = req.body;
+    const { id, name, itemId, plaidAccountId, actualAccountId, pendingReconcile } = req.body;
 
-    if (!quilttAccountId || !actualAccountId) {
+    if (!plaidAccountId || !actualAccountId || !itemId) {
       return res.status(400).json({
-        error: "Missing required fields: quilttAccountId, actualAccountId"
+        error: "Missing required fields: itemId, plaidAccountId, actualAccountId"
       });
     }
-    if (!quilttAccountId.startsWith("acct_")) {
-      return res.status(400).json({ error: "quilttAccountId must start with 'acct_'" });
-    }
-    if (connectionId && !connectionId.startsWith("conn_")) {
-      return res.status(400).json({ error: "connectionId must start with 'conn_'" });
+    if (typeof plaidAccountId !== "string" || plaidAccountId.length < 10) {
+      return res.status(400).json({ error: "plaidAccountId doesn't look like a Plaid account_id" });
     }
     if (!UUID_RE.test(actualAccountId)) {
       return res.status(400).json({ error: "actualAccountId must be a UUID" });
     }
 
     const config = loadConfig();
+    if (!config.items.some(it => it.itemId === itemId)) {
+      return res.status(400).json({ error: `Unknown itemId: ${itemId}. Connect the bank first.` });
+    }
+
     const mappings = config.mappings.slice();
 
     if (id) {
@@ -386,15 +495,15 @@ app.post("/api/mappings", (req, res) => {
       mappings[idx] = {
         ...mappings[idx],
         name: name || mappings[idx].name,
-        connectionId: connectionId || mappings[idx].connectionId,
-        quilttAccountId,
+        itemId,
+        plaidAccountId,
         actualAccountId,
         ...(typeof pendingReconcile === "boolean" ? { pendingReconcile } : {}),
       };
     } else {
-      // Prevent duplicate (same quilttAccountId + actualAccountId)
+      // Prevent duplicate (same plaidAccountId + actualAccountId)
       const dup = mappings.find(m =>
-        m.quilttAccountId === quilttAccountId && m.actualAccountId === actualAccountId
+        m.plaidAccountId === plaidAccountId && m.actualAccountId === actualAccountId
       );
       if (dup) {
         return res.status(409).json({ error: "Mapping already exists", id: dup.id });
@@ -402,8 +511,8 @@ app.post("/api/mappings", (req, res) => {
       mappings.push({
         id: newMappingId(),
         name: name || "Unnamed",
-        connectionId: connectionId || null,
-        quilttAccountId,
+        itemId,
+        plaidAccountId,
         actualAccountId,
         pendingReconcile: !!pendingReconcile,
       });
@@ -438,7 +547,7 @@ app.delete("/api/mappings/:id", (req, res) => {
 // Save Actual Budget configuration
 app.post("/api/setup/save-actual", (req, res) => {
   try {
-    const { serverURL, password, syncId, daysToSync, cronSchedule } = req.body;
+    const { serverURL, password, syncId, cronSchedule } = req.body;
 
     if (!serverURL || !password || !syncId) {
       return res.status(400).json({
@@ -472,7 +581,6 @@ app.post("/api/setup/save-actual", (req, res) => {
         syncId,
       },
       sync: {
-        daysToSync: parseInt(daysToSync) || 7,
         cronSchedule: cronSchedule || "0 8 * * *",
       },
     };
@@ -661,7 +769,7 @@ app.get("/", (req, res) => {
   const status = checkConfigStatus();
 
   // Redirect based on configuration completeness
-  if (!status.hasQuilttConfig) {
+  if (!status.hasPlaidConfig) {
     return res.redirect("/connect");
   }
 
@@ -673,22 +781,22 @@ app.get("/", (req, res) => {
   return res.redirect("/admin");
 });
 
-// Render an HTML file with Quiltt template values filled in
-function renderWithQuilttConfig(htmlPath, res) {
+// Render an HTML file with Plaid template values filled in
+function renderWithPlaidConfig(htmlPath, res) {
   const config = loadConfig();
   let html = fs.readFileSync(htmlPath, "utf8");
-  html = html.replaceAll("{{ connector_id }}", config.quiltt?.connectorId || "");
-  html = html.replaceAll("{{ has_credentials }}", config.quiltt?.apiSecret && config.quiltt?.connectorId ? "true" : "false");
+  html = html.replaceAll("{{ plaid_env }}", config.plaid?.env || "sandbox");
+  html = html.replaceAll("{{ has_credentials }}", config.plaid?.clientId && config.plaid?.secret ? "true" : "false");
   res.type("html").send(html);
 }
 
-// Quiltt Connector page (bank connection flow)
+// Plaid Link page (bank connection flow)
 app.get("/connect", (req, res) => {
   const htmlPath = path.join(staticDir, "connect.html");
   if (!fs.existsSync(htmlPath)) {
     return res.status(404).send("Connect page not found. Make sure connect.html exists in static/ folder.");
   }
-  renderWithQuilttConfig(htmlPath, res);
+  renderWithPlaidConfig(htmlPath, res);
 });
 
 // Setup wizard page (Actual Budget configuration)
@@ -706,7 +814,7 @@ app.get("/admin", (req, res) => {
   if (!fs.existsSync(adminPath)) {
     return res.status(404).send("Admin page not found. Make sure admin.html exists in static/ folder.");
   }
-  renderWithQuilttConfig(adminPath, res);
+  renderWithPlaidConfig(adminPath, res);
 });
 
 app.get("/ping", (req, res) => {
@@ -722,7 +830,7 @@ app.post("/manual-sync", async (req, res) => {
       return res.status(400).json({
         success: false,
         error: "Configuration incomplete. Please complete the setup wizard first.",
-        hasQuilttConfig: status.hasQuilttConfig,
+        hasPlaidConfig: status.hasPlaidConfig,
         hasActualConfig: status.hasActualConfig
       });
     }
@@ -765,13 +873,13 @@ app.get("/admin/api/config", (req, res) => {
     const config = loadConfig();
     // Return actual config values (mask sensitive data for display)
     const safeConfig = {
-      QUILTT_API_SECRET: config.quiltt?.apiSecret ? config.quiltt.apiSecret.substring(0, 8) + "***" : "",
-      QUILTT_CONNECTOR_ID: config.quiltt?.connectorId || "",
-      QUILTT_PROFILE_ID: config.quiltt?.profileId || "",
+      PLAID_CLIENT_ID: config.plaid?.clientId || "",
+      PLAID_SECRET: config.plaid?.secret ? config.plaid.secret.substring(0, 6) + "***" : "",
+      PLAID_ENV: config.plaid?.env || "sandbox",
+      PLAID_DAYS_REQUESTED: config.plaid?.daysRequested || 90,
       ACTUAL_SERVER_URL: config.actual?.serverURL || "",
       ACTUAL_PASSWORD: config.actual?.password ? "***" : "",
       ACTUAL_SYNC_ID: config.actual?.syncId || "",
-      DAYS_TO_SYNC: config.sync?.daysToSync || 7,
       CRON_SCHEDULE: config.sync?.cronSchedule || "0 8 * * *",
     };
     res.json(safeConfig);
@@ -801,12 +909,12 @@ app.post("/admin/api/config", (req, res) => {
 
     const newConfig = {
       ...existingConfig,
-      quiltt: {
-        ...existingConfig.quiltt,
-        apiSecret: req.body.QUILTT_API_SECRET || existingConfig.quiltt?.apiSecret,
-        connectorId: req.body.QUILTT_CONNECTOR_ID || existingConfig.quiltt?.connectorId,
-        // profileId is managed by the app, not the form — always preserve
-        profileId: existingConfig.quiltt?.profileId,
+      plaid: {
+        ...existingConfig.plaid,
+        clientId: req.body.PLAID_CLIENT_ID || existingConfig.plaid?.clientId,
+        secret: req.body.PLAID_SECRET || existingConfig.plaid?.secret,
+        env: req.body.PLAID_ENV || existingConfig.plaid?.env || "sandbox",
+        daysRequested: parseInt(req.body.PLAID_DAYS_REQUESTED) || existingConfig.plaid?.daysRequested || 90,
       },
       actual: {
         dataDir: process.env.ACTUAL_DATA_DIR || "/app/actual-data",
@@ -815,7 +923,6 @@ app.post("/admin/api/config", (req, res) => {
         syncId: req.body.ACTUAL_SYNC_ID,
       },
       sync: {
-        daysToSync: parseInt(req.body.DAYS_TO_SYNC) || 7,
         cronSchedule: req.body.CRON_SCHEDULE || "0 2 * * *",
       },
     };
@@ -857,6 +964,7 @@ app.listen(PORT, async () => {
 
   // Only initialize Actual Budget if configuration is complete and valid
   const status = checkConfigStatus();
+  console.log(`   Plaid env: ${status.plaidEnv}, Items: ${status.itemCount}/${status.itemLimit}`);
   if (status.hasActualConfig) {
     try {
       await initActual();

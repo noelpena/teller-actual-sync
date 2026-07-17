@@ -1,7 +1,7 @@
 {
-  "name": "quiltt-actual-sync",
+  "name": "plaid-actual-sync",
   "version": "2.0.0",
-  "description": "Automated bank transaction sync from Quiltt to Actual Budget",
+  "description": "Automated bank transaction sync from Plaid to Actual Budget",
   "private": true,
   "type": "module",
   "main": "server.js",
@@ -12,7 +12,7 @@
   },
   "keywords": [
     "actual-budget",
-    "quiltt",
+    "plaid",
     "banking",
     "automation",
     "homelab"

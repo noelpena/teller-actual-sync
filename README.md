@@ -1,19 +1,34 @@
-# Quiltt → Actual Budget Sync
+# Plaid → Actual Budget Sync
 
-Automated bank transaction sync from [Quiltt](https://quiltt.io) to [Actual Budget](https://actualbudget.org). Self-hosted, Docker-ready, with a web UI for setup and administration. Perfect for homelabbers running CasaOS or any Docker environment.
+Automated bank transaction sync from [Plaid](https://plaid.com) to [Actual Budget](https://actualbudget.org). Self-hosted, Docker-ready, with a web UI for setup and administration. Perfect for homelabbers running CasaOS or any Docker environment.
 
-> **⚠️ v2.0 — Teller replaced with Quiltt.** Teller's API service has been discontinued, so this project migrated to Quiltt as its bank data aggregator. Quiltt routes through Plaid, MX, Finicity and Akoya under the hood, requires **no mTLS certificates**, and normalizes data across providers. Existing Teller configs cannot be migrated automatically — you'll need to reconnect your banks through the `/connect` page. See [Migrating from Teller](#-migrating-from-teller-v1x).
+> **⚠️ v2.0 — Teller replaced with Plaid.** Teller's API service has been discontinued, so this project migrated to Plaid. Plaid's free **Trial plan** (April 2026+) covers this use case: real production bank data, up to 10 bank connections, no credit card. Existing Teller configs cannot be migrated automatically — you'll reconnect your banks through the `/connect` page. See [Migrating from Teller](#-migrating-from-teller-v1x).
 
 ## ✨ Features
 
-- 🏦 **Bank connections via Quiltt Connector** — connect any institution supported by Plaid/MX/Finicity through one widget
-- 🔁 **Automated scheduled sync** — cron-based, defaults to daily
+- 🏦 **Bank connections via Plaid Link** — thousands of US/Canadian institutions
+- 🔁 **Incremental cursor-based sync** (`/transactions/sync`) — each run fetches exactly what changed, including corrections and reversals
 - 🧩 **Account mappings** — pair any number of bank accounts with Actual Budget accounts
-- ⚖️ **Auto-reconcile** — align Actual balances with the bank's reported balance
-- 🆔 **Stable transaction IDs** — Quiltt IDs are used as `imported_id` for reliable dedup
+- ⚖️ **Auto-reconcile** — align Actual balances with the bank's reported balance (sign-correct for credit cards)
+- 🆔 **Stable transaction IDs** — Plaid IDs used as `imported_id` for exact dedup; failed runs replay safely
+- 🩹 **Repair flow** — broken bank logins fixed via Plaid Link update mode without burning connection slots
 - 🔧 **Web setup wizard + admin dashboard** — no manual config file editing needed
 - 🐳 **Docker & CasaOS ready**
-- 🔐 **No certificates** — plain API-key auth; secrets never leave your server
+
+## 💰 The Plaid Trial Plan (free)
+
+| | |
+|---|---|
+| Cost | Free — no credit card |
+| Eligibility | New Plaid teams (US/Canada) created on/after April 15, 2026 |
+| Bank connections | **10 production Items, lifetime** — removing one does NOT free the slot |
+| API calls | Unlimited on connected Items |
+| Products | Transactions, Balance, and more |
+
+**Consequences for this app:**
+- Do all testing in **Sandbox** (unlimited, fake banks) — only link real banks in Production
+- Use the **Repair** button (Link update mode) for broken logins — it reuses the existing connection; re-linking from scratch burns a slot permanently
+- The admin UI shows your `N / 10` slot usage
 
 ## 🚀 Quick Start (5 Minutes)
 
@@ -21,23 +36,16 @@ Automated bank transaction sync from [Quiltt](https://quiltt.io) to [Actual Budg
 
 - Docker & Docker Compose
 - A running [Actual Budget server](https://actualbudget.org/docs/install/)
-- A free [Quiltt Dashboard](https://dashboard.quiltt.dev) account
+- A free [Plaid account](https://dashboard.plaid.com/signup)
 
-### Step 1: Get Quiltt Credentials
+### Step 1: Get Plaid Credentials
 
-1. Sign up at the [Quiltt Dashboard](https://dashboard.quiltt.dev)
-2. Inside your Environment, copy your **API Key secret**
-3. Create a **Connector** (enable the aggregation provider(s) you want) and copy its **Connector ID**
-
-> **Sandbox first:** Quiltt Environments come in Sandbox and Production flavors. Use a Sandbox environment with the Mock provider to test the full flow before connecting real banks. Production connections are billed per Quiltt's pricing — check [quiltt.io/pricing](https://www.quiltt.io/) before going live.
+1. Sign up at the [Plaid Dashboard](https://dashboard.plaid.com/signup)
+2. Go to **Developers → Keys**: copy your **client ID** and the **Sandbox secret** (grab the Production secret later, once you've tested)
 
 ### Step 2: Run the Container
 
 ```bash
-# Pull the Docker image
-docker compose up -d
-
-# Or build locally
 git clone https://github.com/noelpena/teller-actual-sync.git
 cd teller-actual-sync
 docker compose up -d --build
@@ -46,32 +54,44 @@ docker compose up -d --build
 ### Step 3: Complete Setup in Your Browser
 
 1. Open `http://localhost:8001` — you'll be redirected to the setup flow
-2. **`/connect`**: enter your Quiltt API secret + Connector ID, then connect your bank through the Quiltt Connector
+2. **`/connect`**: enter your Plaid client ID + secret + environment, then link a bank through Plaid Link
+   - Sandbox: pick any institution, log in with `user_good` / `pass_good` (or username `user_transactions_dynamic` for realistic transaction data)
 3. **`/setup`**: enter your Actual Budget server URL, password, and budget Sync ID
 4. **`/admin` → Account Mappings**: pair each bank account with an Actual account (create new ones on the fly)
 5. Hit **Sync Now** — done 🎉
 
-## 📚 Detailed Setup Guide
+> First sync note: right after linking, Plaid may still be preparing transaction history. If the first sync reports nothing, wait a minute and sync again — history depth is controlled by the "days requested" setting (default 90, up to 730).
 
-### How Authentication Works
+## 🛠️ How the Sync Works
 
-Quiltt uses two credential scopes — both handled automatically by this app:
+```
+┌─────────────┐      Plaid Link       ┌────────────┐
+│   Browser   │──────────────────────▶│   Plaid    │──▶ your bank
+└──────┬──────┘   link_token /        └─────┬──────┘
+       │          public_token              │ /transactions/sync (cursor)
+┌──────▼──────────────────────────────┐     │
+│  plaid-actual-sync (this app)       │◀────┘
+│  • one access_token per bank Item   │
+│  • per-Item sync cursor             │     ┌───────────────┐
+│  • transform + import + reconcile   │────▶│ Actual Budget │
+│  • cron scheduler                   │     └───────────────┘
+└─────────────────────────────────────┘
+```
 
-| Credential | Where it's used | Notes |
-|---|---|---|
-| API Key secret | Server-side only | Stored in `config/config.json`, never sent to the browser |
-| Session token | Browser (Connector widget) | Short-lived (24h), issued server-side per launch |
-| Profile ID | Server-side GraphQL | Auto-created on first connect; all bank connections live under this single "household" profile |
+Each sync run, per bank connection (Plaid "Item"):
 
-The sync itself authenticates server-to-server with `Basic profileId:apiSecret` — no token rotation, no expiry, no rate limits.
+1. Call `/transactions/sync` from the stored cursor, paging until `has_more` is false
+2. Route `added` + `modified` transactions to mappings by account ID and import into Actual (`imported_id` = Plaid transaction ID)
+3. Delete `removed` transactions from Actual (reversed pendings; pending→posted swaps arrive as remove+add pairs)
+4. Reconcile balances if requested
+5. Persist the new cursor — **only after a successful import**, so a crashed run simply replays (dedup makes it idempotent)
 
-### Finding Your Actual Budget Sync ID
+### Data conventions handled for you
 
-1. Open Actual Budget
-2. Settings → **Show Advanced Settings**
-3. Copy the **Sync ID**
-
-Bank-to-Actual account pairing happens in the admin UI, so you don't need to hunt for Actual account IDs manually.
+- **Amount signs**: Plaid reports outflows as positive; Actual uses negative. Flipped on import.
+- **Credit/loan balances**: Plaid reports owed amounts as positive; Actual as negative. Flipped during reconcile.
+- **Pending transactions**: imported as uncleared; automatically replaced when they post.
+- **Payees**: Plaid's enriched `merchant_name` when available, raw description otherwise.
 
 ## 🐳 Docker Deployment
 
@@ -91,7 +111,7 @@ volumes:
 
 ```bash
 docker run -d \
-  --name quiltt-actual-sync \
+  --name plaid-actual-sync \
   -p 8001:8001 \
   -v $(pwd)/config:/app/config \
   -v $(pwd)/logs:/app/logs \
@@ -103,22 +123,20 @@ docker run -d \
 
 ## 🔧 Configuration
 
-### How Configuration Works
-
 Everything is stored in `config/config.json` (created by the setup wizard). Environment variables act as fallbacks when a config value is missing:
 
 | Env var | config.json equivalent |
 |---|---|
-| `QUILTT_API_SECRET` | `quiltt.apiSecret` |
-| `QUILTT_CONNECTOR_ID` | `quiltt.connectorId` |
-| `QUILTT_PROFILE_ID` | `quiltt.profileId` (auto-managed) |
+| `PLAID_CLIENT_ID` | `plaid.clientId` |
+| `PLAID_SECRET` | `plaid.secret` |
+| `PLAID_ENV` | `plaid.env` (`sandbox` \| `production`) |
+| `PLAID_DAYS_REQUESTED` | `plaid.daysRequested` (30–730; history depth at link time) |
 | `ACTUAL_SERVER_URL` | `actual.serverURL` |
 | `ACTUAL_PASSWORD` | `actual.password` |
 | `ACTUAL_SYNC_ID` | `actual.syncId` |
-| `DAYS_TO_SYNC` | `sync.daysToSync` |
 | `CRON_SCHEDULE` | `sync.cronSchedule` |
 
-See [config/config.json.example](config/config.json.example) for the full schema, including account mappings.
+Bank connections (`items`, holding access tokens and sync cursors) and account `mappings` are managed by the app — see [config/config.json.example](config/config.json.example) for the full schema.
 
 ### Cron Schedule Examples
 
@@ -133,34 +151,31 @@ See [config/config.json.example](config/config.json.example) for the full schema
 
 Open `http://localhost:8001/admin`:
 
-- **Dashboard** — sync status, setup health, current config at a glance
-- **Configuration** — edit Quiltt/Actual credentials and sync settings
-- **Account Mappings** — connect banks, pair accounts, per-mapping sync/reconcile/repair
+- **Dashboard** — sync status, setup health, connection slot usage
+- **Configuration** — edit Plaid/Actual credentials and the sync schedule
+- **Account Mappings** — bank connections list (repair/remove), account-to-account pairing, per-mapping sync/reconcile
 - **Sync Logs** — last 50 sync runs with per-mapping stats
 
-When a bank connection breaks (expired login, MFA change), the affected mappings show **Needs reconnect** with a **Repair** button that launches Quiltt's reconnect flow.
+When a bank login breaks (changed password, expired MFA), the connection and its mappings show **Needs reconnect** with a **Repair** button that launches Plaid Link's update mode.
 
 ## 🔌 API Endpoints
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/manual-sync` | Run a full sync across all mappings |
+| `POST` | `/manual-sync` | Run a full sync across all bank connections |
 | `GET` | `/sync-logs` | Recent sync logs (JSON) |
 | `GET` | `/ping` | Health check |
-| `GET` | `/api/config/status` | Configuration completeness |
-| `POST` | `/api/quiltt/session` | Issue a Connector session token |
-| `GET` | `/api/quiltt/accounts` | List Quiltt accounts (+ connection status, balance) |
-| `POST` | `/api/test/quiltt` | Verify Quiltt credentials |
+| `GET` | `/api/config/status` | Configuration completeness + slot usage |
+| `POST` | `/api/plaid/link-token` | Create a Link token (`{itemId}` = update mode) |
+| `POST` | `/api/plaid/exchange` | Exchange a public token, store the Item |
+| `GET` | `/api/plaid/accounts` | All bank accounts across Items |
+| `GET` | `/api/plaid/items` | List bank connections |
+| `POST` | `/api/plaid/items/:id/remove` | Disconnect a bank (⚠️ doesn't refund Trial slots) |
+| `POST` | `/api/test/plaid` | Verify Plaid credentials |
 | `POST` | `/api/test/actual` | Verify Actual Budget connection |
 | `GET/POST/PATCH/DELETE` | `/api/mappings[...]` | Manage account mappings |
-| `POST` | `/api/mappings/:id/sync` | Sync one mapping |
+| `POST` | `/api/mappings/:id/sync` | Sync one mapping (syncs its whole Item) |
 | `POST` | `/api/mappings/:id/reconcile` | Reconcile one mapping to the bank balance |
-
-### Example: Trigger Manual Sync
-
-```bash
-curl -X POST http://localhost:8001/manual-sync
-```
 
 ## 🏠 CasaOS Installation
 
@@ -168,36 +183,38 @@ Import [docker-compose.yml](docker-compose.yml) through CasaOS's **Install a cus
 
 ## 🔄 Migrating from Teller (v1.x)
 
-Teller account IDs and access tokens have no Quiltt equivalent, so mappings can't be carried over — but your Actual accounts and history are untouched:
+Teller account IDs and access tokens have no Plaid equivalent, so mappings can't be carried over — but your Actual accounts and history are untouched:
 
 1. Update to the v2 image and restart
-2. Go to `/connect`, enter Quiltt credentials, and reconnect each bank
+2. Go to `/connect`, enter Plaid credentials, and link each bank
 3. In **Account Mappings**, map each bank account to its **existing** Actual account (pick "Use existing Actual account" — don't create duplicates)
 4. Old Teller mappings are ignored by the sync; delete them from the mappings list when ready
 
-Duplicate protection: transactions are imported with Quiltt's stable IDs and matched against existing entries by Actual's fuzzy dedup (same amount/date), so re-mapping to the same Actual account won't double-import recent history in most cases. Consider setting **Days to Sync** low (e.g. 3) for the first Quiltt sync.
+Duplicate protection: incoming transactions carry stable Plaid IDs and are also fuzzy-matched by Actual (same amount/date), so re-mapping to the same Actual account won't double-import recent history in most cases.
 
 ## 🔍 Troubleshooting
 
-### Setup wizard shows "Configuration incomplete"
+### First sync returns 0 transactions
 
-Check `/api/config/status`. You need: Quiltt credentials + at least one valid mapping + Actual server config.
+Plaid prepares transaction history in the background after linking — typically 30 days almost immediately, full history within a minute or two. Sync again shortly.
 
-### Quiltt test fails with 401
+### OAuth banks (Chase, Bank of America, …) won't connect
 
-Your API Key secret is wrong or belongs to a different environment than your Connector. Both must come from the same Quiltt Environment.
+OAuth institutions require an **HTTPS redirect URI** registered in the Plaid Dashboard (Developers → API → Allowed redirect URIs). Put the app behind a reverse proxy with TLS and register `https://your-domain/connect`. Non-OAuth banks work over plain HTTP.
 
-### Session token rate limit (429)
+### "ITEM_LOGIN_REQUIRED" / Needs reconnect
 
-Quiltt limits session tokens to 10/hour per profile. Sessions are only used to open the Connector widget — wait an hour or revoke unused tokens. Syncs are unaffected (they use Basic auth).
+The bank login broke upstream. Click **Repair** on the connection — this launches Link's update mode and does **not** use a Trial plan slot.
 
-### Accounts don't appear right after connecting
+### Hit the 10-connection Trial limit
 
-Quiltt syncs new connections in the background; accounts can take ~10-30 seconds to appear. The UI polls automatically — use **Map Unmapped Accounts** if you closed the picker too early.
+The limit is lifetime (removals don't refund). Upgrade to Plaid's Pay-as-you-go plan (no minimum) or contact Plaid.
 
-### Mapping shows "Needs reconnect"
+### Sandbox testing tips
 
-The bank link broke upstream (changed password, expired MFA). Click **Repair** on the mapping to relaunch the Connector's reconnect flow.
+- Realistic data: link with username `user_transactions_dynamic` (any password)
+- Force a broken login to test Repair: `POST https://sandbox.plaid.com/sandbox/item/reset_login`
+- Seed new transactions: `POST https://sandbox.plaid.com/sandbox/transactions/create`
 
 ### Actual Budget connection fails
 
@@ -207,13 +224,8 @@ The bank link broke upstream (changed password, expired MFA). Click **Repair** o
 ### View detailed logs
 
 ```bash
-# Container logs
-docker logs -f quiltt-actual-sync
-
-# Sync logs (JSON format)
+docker logs -f plaid-actual-sync
 cat logs/sync.log
-
-# Via API
 curl http://localhost:8001/sync-logs
 ```
 
@@ -222,8 +234,8 @@ curl http://localhost:8001/sync-logs
 ```
 .
 ├── server.js           # Express server: web UI, admin API, cron scheduler
-├── sync.js             # Sync engine: fetch → transform → import → reconcile
-├── quiltt.js           # Quiltt API client (GraphQL + sessions)
+├── sync.js             # Sync engine: cursor sync → transform → import → reconcile
+├── plaid.js            # Plaid API client (link tokens, exchange, /transactions/sync)
 ├── static/             # Web UI (connect, setup wizard, admin dashboard)
 ├── config/             # config.json (created by setup wizard)
 ├── logs/               # sync.log
@@ -231,65 +243,19 @@ curl http://localhost:8001/sync-logs
 └── actual-data/        # Actual Budget local data cache
 ```
 
-## 🛠️ How It Works
-
-### Architecture Overview
-
-```
-┌─────────────┐   Connector widget    ┌────────────┐
-│   Browser   │──────────────────────▶│   Quiltt   │──▶ Plaid / MX / Finicity / Akoya
-└──────┬──────┘                       └─────┬──────┘
-       │ session token                      │ GraphQL (Basic auth)
-┌──────▼──────────────────────────────┐     │
-│  quiltt-actual-sync (this app)      │◀────┘
-│  • issues session tokens            │
-│  • fetches transactions & balances  │     ┌───────────────┐
-│  • transforms & imports             │────▶│ Actual Budget │
-│  • cron scheduler                   │     └───────────────┘
-└─────────────────────────────────────┘
-```
-
-### Sync Process
-
-1. Load config + mappings
-2. Init Actual SDK, download budget
-3. For each enabled mapping:
-   - Query Quiltt GraphQL for transactions since `daysToSync` ago (cursor-paginated)
-   - Check the connection status — flag **Needs reconnect** if the bank link broke
-   - Transform to Actual's format (`imported_id` = Quiltt transaction ID, `cleared` = POSTED)
-   - Import via `importTransactions` (dedup by imported_id + fuzzy matching)
-   - Optionally reconcile the balance
-4. Persist per-mapping stats, write sync log, shut down the SDK
-
-### Data Conventions
-
-- **Amounts**: Quiltt normalizes signs across providers — positive = money in, negative = money out. Matches Actual directly, no flipping.
-- **Balances**: liability accounts (credit cards, loans) report negative balances when money is owed — also matching Actual's convention, which makes reconcile accurate for credit cards.
-
 ## 🔐 Security Best Practices
 
-- Keep your Quiltt **API Key secret** server-side — it's stored in `config/config.json`; never expose that volume publicly
-- Run behind a reverse proxy with auth (the admin UI has no built-in login)
-- Use HTTPS if exposing beyond your LAN
+- Plaid **access tokens and your secret** live in `config/config.json` — never expose that volume publicly
+- Run behind a reverse proxy with auth (the admin UI has no built-in login); HTTPS also unlocks OAuth banks
 - Bind the port to localhost or your LAN interface: `127.0.0.1:8001:8001`
 
 ## 🤝 Contributing
 
-### Development Setup
-
 ```bash
-# Clone repository
 git clone https://github.com/noelpena/teller-actual-sync.git
 cd teller-actual-sync
-
-# Install dependencies
 npm install
-
-# Run locally (requires config/config.json or env vars)
-npm run dev
-
-# Build Docker image
-docker build -t quiltt-actual-sync .
+npm run dev          # requires config/config.json or env vars
 ```
 
 ## 📄 License
@@ -299,7 +265,7 @@ MIT
 ## 🙏 Acknowledgments
 
 - [Actual Budget](https://actualbudget.org) — the excellent open-source budgeting app
-- [Quiltt](https://quiltt.io) — unified open-banking API
+- [Plaid](https://plaid.com) — bank data API with a genuinely free tier
 - Originally built on [Teller](https://teller.io) (v1.x), migrated after Teller's API discontinuation
 
 ## 📞 Support

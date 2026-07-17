@@ -4,12 +4,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
-import {
-  QuilttAuthError,
-  connectionNeedsRepair,
-  fetchAccount,
-  fetchTransactions,
-} from "./quiltt.js";
+import { PlaidApiError, transactionsSyncAll } from "./plaid.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +17,10 @@ function newMappingId() {
 }
 
 // Load config from file or env vars.
-// Each mapping = one Quiltt account paired with one Actual account.
+// - plaid: API credentials + environment
+// - items: one entry per Plaid Item (bank connection); holds the access token
+//   and the per-Item /transactions/sync cursor
+// - mappings: one entry per (Plaid account → Actual account) pair
 function loadConfig() {
   const configPath = path.join(__dirname, "config", "config.json");
 
@@ -36,10 +34,10 @@ function loadConfig() {
     }
   }
 
-  if (fileConfig.teller) {
+  if (fileConfig.teller || fileConfig.quiltt) {
     console.warn(
-      "⚠️  Legacy Teller config detected. Teller's API service has been discontinued — " +
-      "reconfigure with Quiltt via the /connect page. Old Teller mappings will be skipped."
+      "⚠️  Legacy Teller/Quiltt config detected — this version uses Plaid. " +
+      "Reconnect your banks via the /connect page. Old mappings will be skipped."
     );
   }
 
@@ -48,11 +46,13 @@ function loadConfig() {
   mappings = mappings.map((m) => ({ ...m, id: m.id || newMappingId() }));
 
   return {
-    quiltt: {
-      apiSecret: fileConfig.quiltt?.apiSecret || process.env.QUILTT_API_SECRET,
-      connectorId: fileConfig.quiltt?.connectorId || process.env.QUILTT_CONNECTOR_ID,
-      profileId: fileConfig.quiltt?.profileId || process.env.QUILTT_PROFILE_ID,
+    plaid: {
+      clientId: fileConfig.plaid?.clientId || process.env.PLAID_CLIENT_ID,
+      secret: fileConfig.plaid?.secret || process.env.PLAID_SECRET,
+      env: fileConfig.plaid?.env || process.env.PLAID_ENV || "sandbox",
+      daysRequested: fileConfig.plaid?.daysRequested || parseInt(process.env.PLAID_DAYS_REQUESTED || "90"),
     },
+    items: Array.isArray(fileConfig.items) ? fileConfig.items.slice() : [],
     actual: {
       dataDir: fileConfig.actual?.dataDir || process.env.ACTUAL_DATA_DIR || "/app/actual-data",
       serverURL: fileConfig.actual?.serverURL || process.env.ACTUAL_SERVER_URL,
@@ -61,14 +61,13 @@ function loadConfig() {
     },
     mappings,
     sync: {
-      daysToSync: fileConfig.sync?.daysToSync || parseInt(process.env.DAYS_TO_SYNC || "7"),
       cronSchedule: fileConfig.sync?.cronSchedule || process.env.CRON_SCHEDULE || "0 8 * * *",
     },
   };
 }
 
-// Persist mappings (and only mappings) to config.json, preserving everything else
-function saveMappings(mappings) {
+// Low-level read-modify-write of config.json preserving unknown keys
+function patchConfigFile(patchFn) {
   const configDir = path.join(__dirname, "config");
   const configPath = path.join(configDir, "config.json");
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
@@ -78,11 +77,18 @@ function saveMappings(mappings) {
     try { existing = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (_) {}
   }
 
+  const next = patchFn(existing);
+  fs.writeFileSync(configPath, JSON.stringify(next, null, 2));
+  return next;
+}
+
+// Persist mappings (and only mappings), preserving everything else
+function saveMappings(mappings) {
   const cleaned = mappings.map((m) => ({
     id: m.id || newMappingId(),
     name: m.name || "Unnamed",
-    connectionId: m.connectionId || null,
-    quilttAccountId: m.quilttAccountId,
+    itemId: m.itemId || null,
+    plaidAccountId: m.plaidAccountId,
     actualAccountId: m.actualAccountId,
     disabled: !!m.disabled,
     needsReconnect: !!m.needsReconnect,
@@ -96,34 +102,43 @@ function saveMappings(mappings) {
     lastReconcileDelta: m.lastReconcileDelta == null ? null : m.lastReconcileDelta,
   }));
 
-  fs.writeFileSync(configPath, JSON.stringify({ ...existing, mappings: cleaned }, null, 2));
+  patchConfigFile((existing) => ({ ...existing, mappings: cleaned }));
   return cleaned;
 }
 
-// Persist Quiltt settings (apiSecret/connectorId/profileId), preserving everything else.
-// Pass only the keys you want to change.
-function saveQuilttConfig(patch) {
-  const configDir = path.join(__dirname, "config");
-  const configPath = path.join(configDir, "config.json");
-  if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-
-  let existing = {};
-  if (fs.existsSync(configPath)) {
-    try { existing = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (_) {}
-  }
-
-  const quiltt = { ...existing.quiltt };
-  for (const key of ["apiSecret", "connectorId", "profileId"]) {
-    if (patch[key] !== undefined && patch[key] !== null && patch[key] !== "") {
-      quiltt[key] = patch[key];
-    }
-  }
-
-  fs.writeFileSync(configPath, JSON.stringify({ ...existing, quiltt }, null, 2));
-  return quiltt;
+// Persist Plaid Items (access tokens + sync cursors), preserving everything else
+function saveItems(items) {
+  const cleaned = items.map((it) => ({
+    itemId: it.itemId,
+    accessToken: it.accessToken,
+    institution: it.institution || null,
+    cursor: it.cursor || null,
+    needsReconnect: !!it.needsReconnect,
+    createdAt: it.createdAt || null,
+    lastSyncedAt: it.lastSyncedAt || null,
+    lastError: it.lastError || null,
+  }));
+  patchConfigFile((existing) => ({ ...existing, items: cleaned }));
+  return cleaned;
 }
 
-// Update sync state for a single mapping (atomic read-modify-write of config.json)
+// Persist Plaid settings (clientId/secret/env/daysRequested). Pass only keys to change.
+function savePlaidConfig(patch) {
+  let saved;
+  patchConfigFile((existing) => {
+    const plaid = { ...existing.plaid };
+    for (const key of ["clientId", "secret", "env", "daysRequested"]) {
+      if (patch[key] !== undefined && patch[key] !== null && patch[key] !== "") {
+        plaid[key] = patch[key];
+      }
+    }
+    saved = plaid;
+    return { ...existing, plaid };
+  });
+  return saved;
+}
+
+// Update state for a single mapping (atomic read-modify-write)
 function updateMappingState(mappingId, patch) {
   const config = loadConfig();
   const mappings = config.mappings.slice();
@@ -134,43 +149,48 @@ function updateMappingState(mappingId, patch) {
   return mappings[idx];
 }
 
-// Get transaction start date
-function getTransactionStartDate(daysAgo) {
-  const today = new Date();
-  const startDate = new Date(today.getTime() - daysAgo * 24 * 60 * 60 * 1000);
-  const year = startDate.getFullYear();
-  const month = `0${startDate.getMonth() + 1}`.slice(-2);
-  const day = `0${startDate.getDate()}`.slice(-2);
-  return `${year}-${month}-${day}`;
+// Update state for a single Item (atomic read-modify-write)
+function updateItemState(itemId, patch) {
+  const config = loadConfig();
+  const items = config.items.slice();
+  const idx = items.findIndex(it => it.itemId === itemId);
+  if (idx === -1) return null;
+  items[idx] = { ...items[idx], ...patch };
+  saveItems(items);
+  return items[idx];
 }
 
-// Fetch the current balance from Quiltt for a single mapping. Returns a Number (in dollars) or null.
-// Quiltt normalizes balance signs across providers: liability accounts (credit cards, loans)
-// report a NEGATIVE balance when money is owed — which matches Actual's convention directly.
-async function fetchQuilttBalance({ mapping, quilttConfig }) {
-  const account = await fetchAccount({ quiltt: quilttConfig, accountId: mapping.quilttAccountId });
-  const v = account.balance?.current ?? account.balance?.available;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-// Transform Quiltt transactions to Actual format.
-// Quiltt amounts are signed floats: positive = credit (inflow), negative = debit (outflow) —
-// the same convention Actual uses, so no sign flip is needed.
-// Quiltt transaction ids are stable, so imported_id gives us real dedup on re-imports
-// instead of relying only on Actual's fuzzy matching.
+// Transform Plaid transactions to Actual format.
+//
+// SIGN FLIP: Plaid amounts are positive for money moving OUT of the account
+// (a purchase is +12.34); Actual uses negative for outflows. Negate.
+//
+// Plaid transaction_ids are stable → imported_id gives exact dedup, which also
+// makes cursor replays after a failed run idempotent.
 function transformTransactions(transactions) {
   return transactions.map((txn) => ({
     date: txn.date,
-    amount: Math.round(Number(txn.amount) * 100),
-    payee_name: txn.description || "Unknown",
-    imported_id: txn.id,
-    notes: "Imported from Quiltt",
-    cleared: txn.status === "POSTED",
+    amount: Math.round(-Number(txn.amount) * 100),
+    payee_name: txn.merchant_name || txn.name || "Unknown",
+    imported_id: txn.transaction_id,
+    notes: txn.personal_finance_category?.primary
+      ? txn.personal_finance_category.primary.replaceAll("_", " ").toLowerCase()
+      : "",
+    cleared: !txn.pending,
   }));
 }
 
-// Initialize Actual Budget (download budget once, used across all mappings)
+// Bank balance for reconcile, normalized to Actual's sign convention.
+// Plaid reports credit/loan balances POSITIVE when money is owed; Actual
+// represents owed balances as negative. Depository/investment pass through.
+function normalizedBankBalance(plaidAccount) {
+  const v = plaidAccount?.balances?.current ?? plaidAccount?.balances?.available;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return (plaidAccount.type === "credit" || plaidAccount.type === "loan") ? -n : n;
+}
+
+// Initialize Actual Budget (download budget once, used across all items)
 async function initActual(config) {
   try { await actual.shutdown(); } catch (_) {}
 
@@ -199,29 +219,38 @@ function saveSyncLog(status, message, stats = {}) {
   console.log(`[${timestamp}] ${status}: ${message}`, stats);
 }
 
-// Reconcile an account: query Actual's current balance, fetch Quiltt's balance, add adjustment for delta.
+// Delete transactions from an Actual account whose imported_id is in removedIds.
+// Plaid's removed[] covers reversed pendings and pending→posted swaps (the
+// posted version arrives separately in added[] with a new transaction_id).
+async function deleteRemovedTransactions(actualAccountId, removedIds) {
+  if (removedIds.size === 0) return 0;
+  const existing = await actual.getTransactions(actualAccountId);
+  let deleted = 0;
+  for (const tx of existing) {
+    if (tx.imported_id && removedIds.has(tx.imported_id)) {
+      await actual.deleteTransaction(tx.id);
+      deleted++;
+    }
+  }
+  return deleted;
+}
+
+// Reconcile an account: compare Actual's balance to the bank's, add an adjustment.
 // Idempotent — only runs when mapping.pendingReconcile is true. Clears the flag on success.
-async function maybeReconcile({ mapping, quilttConfig, oldestImportedDate }) {
+async function maybeReconcile({ mapping, plaidAccount, oldestImportedDate }) {
   if (!mapping.pendingReconcile) return null;
 
   const label = mapping.name || mapping.id;
   console.log(`   [${label}] Auto-reconcile requested...`);
 
-  let bankBalance;
-  try {
-    bankBalance = await fetchQuilttBalance({ mapping, quilttConfig });
-  } catch (err) {
-    console.warn(`   [${label}] Could not fetch Quiltt balance for reconcile: ${err.message}`);
-    return null; // leave pendingReconcile=true so it retries on next sync
-  }
+  const bankBalance = normalizedBankBalance(plaidAccount);
   if (bankBalance == null) {
-    console.warn(`   [${label}] Quiltt returned no balance; skipping reconcile this run`);
-    return null;
+    console.warn(`   [${label}] No bank balance available; skipping reconcile this run`);
+    return null; // leave pendingReconcile=true so it retries on next sync
   }
   const bankCents = Math.round(bankBalance * 100);
 
   // Sum existing Actual balance for this account.
-  // Use the SDK's getAccountBalance if available; otherwise sum transactions.
   let actualCents;
   try {
     if (typeof actual.getAccountBalance === "function") {
@@ -236,7 +265,6 @@ async function maybeReconcile({ mapping, quilttConfig, oldestImportedDate }) {
       actualCents = txs.reduce((s, t) => s + (t.amount || 0), 0);
     }
   } catch (err) {
-    // Fallback: query transactions directly
     const txs = await actual.getTransactions(mapping.actualAccountId);
     actualCents = txs.reduce((s, t) => s + (t.amount || 0), 0);
   }
@@ -279,113 +307,226 @@ async function maybeReconcile({ mapping, quilttConfig, oldestImportedDate }) {
   return { delta: deltaCents, bankBalance, actualBalance: actualCents / 100 };
 }
 
-// Sync a single mapping. Returns per-mapping stats.
-async function syncOneMapping({ mapping, quilttConfig, startDate, backupDir }) {
-  const label = mapping.name || mapping.id;
-  console.log(`\n🏦 [${label}] Fetching transactions since ${startDate}...`);
+// Sync one Plaid Item: pull the cursor delta, route transactions to this Item's
+// mappings by account_id, import, handle removals, reconcile.
+//
+// The cursor is per-Item and shared by all its accounts, so this ALWAYS processes
+// every mapping on the Item — syncing just one account would silently drop the
+// others' transactions while advancing the shared cursor.
+//
+// Returns { perMapping: [stats], nextCursor, updateStatus, imported }.
+async function syncOneItem({ item, mappings, plaidConfig, backupDir }) {
+  const label = item.institution || item.itemId;
+  console.log(`\n🏦 [${label}] Syncing from cursor ${item.cursor ? item.cursor.slice(0, 12) + "…" : "(start)"}`);
 
-  const { transactions: rawTransactions, connection } = await fetchTransactions({
-    quiltt: quilttConfig,
-    accountId: mapping.quilttAccountId,
-    startDate,
-  });
+  const { added, modified, removed, nextCursor, accounts, updateStatus } =
+    await transactionsSyncAll(plaidConfig, item.accessToken, item.cursor);
 
-  const needsReconnect = connectionNeedsRepair(connection?.status);
-  if (needsReconnect) {
-    console.warn(`   [${label}] Connection status is ${connection.status} — bank link needs repair. Imported data may be stale.`);
+  // First sync right after linking: Plaid may still be preparing history.
+  const isEmpty = added.length + modified.length + removed.length === 0;
+  if (updateStatus === "TRANSACTIONS_UPDATE_STATUS_NOT_READY" && isEmpty) {
+    console.log(`   [${label}] Initial transaction pull not ready yet — will retry next sync`);
+    return { perMapping: [], nextCursor: null, updateStatus, imported: false };
   }
 
-  let result = { added: [], updated: [] };
-  let transactions = [];
-  let oldestImportedDate = null;
+  const accountById = new Map(accounts.map(a => [a.account_id, a]));
 
-  if (rawTransactions && rawTransactions.length > 0) {
-    transactions = transformTransactions(rawTransactions);
-    oldestImportedDate = transactions.reduce(
-      (min, t) => (min == null || t.date < min ? t.date : min),
-      null
-    );
-    console.log(`   [${label}] Importing ${transactions.length} transactions to Actual account ${mapping.actualAccountId}`);
-    result = await actual.importTransactions(mapping.actualAccountId, transactions);
-
-    // Per-mapping backup
-    const currentDate = new Date().toISOString().split("T")[0];
-    const backupFile = path.join(backupDir, `transactions_${currentDate}_${mapping.id}.json`);
-    fs.writeFileSync(backupFile, JSON.stringify(transactions, null, 2));
-  } else {
-    console.log(`   [${label}] No transactions in window`);
+  // Route updates to mappings by Plaid account_id
+  const upsertsByAccount = new Map();
+  for (const txn of [...added, ...modified]) {
+    if (!upsertsByAccount.has(txn.account_id)) upsertsByAccount.set(txn.account_id, []);
+    upsertsByAccount.get(txn.account_id).push(txn);
+  }
+  const removedByAccount = new Map();
+  for (const r of removed) {
+    if (!removedByAccount.has(r.account_id)) removedByAccount.set(r.account_id, new Set());
+    removedByAccount.get(r.account_id).add(r.transaction_id);
   }
 
-  // Auto-reconcile if requested (newly created accounts, or manually triggered)
-  let reconcileResult = null;
-  try {
-    reconcileResult = await maybeReconcile({ mapping, quilttConfig, oldestImportedDate });
-  } catch (err) {
-    console.error(`   [${label}] Reconcile failed:`, err.message);
-    // don't fail the sync — leave pendingReconcile true
+  const perMapping = [];
+  for (const mapping of mappings) {
+    const mLabel = mapping.name || mapping.id;
+    const rawUpserts = upsertsByAccount.get(mapping.plaidAccountId) || [];
+    const removedIds = removedByAccount.get(mapping.plaidAccountId) || new Set();
+
+    let result = { added: [], updated: [] };
+    let oldestImportedDate = null;
+
+    if (rawUpserts.length > 0) {
+      const transactions = transformTransactions(rawUpserts);
+      oldestImportedDate = transactions.reduce(
+        (min, t) => (min == null || t.date < min ? t.date : min),
+        null
+      );
+      console.log(`   [${mLabel}] Importing ${transactions.length} transactions to Actual account ${mapping.actualAccountId}`);
+      result = await actual.importTransactions(mapping.actualAccountId, transactions);
+
+      // Per-mapping backup
+      const currentDate = new Date().toISOString().split("T")[0];
+      const backupFile = path.join(backupDir, `transactions_${currentDate}_${mapping.id}.json`);
+      fs.writeFileSync(backupFile, JSON.stringify(transactions, null, 2));
+    } else {
+      console.log(`   [${mLabel}] No new transactions`);
+    }
+
+    const deleted = await deleteRemovedTransactions(mapping.actualAccountId, removedIds);
+    if (deleted > 0) console.log(`   [${mLabel}] Deleted ${deleted} removed/reversed transaction(s)`);
+
+    // Auto-reconcile if requested (uses the balance that came back with the sync)
+    let reconcileResult = null;
+    try {
+      reconcileResult = await maybeReconcile({
+        mapping,
+        plaidAccount: accountById.get(mapping.plaidAccountId),
+        oldestImportedDate,
+      });
+    } catch (err) {
+      console.error(`   [${mLabel}] Reconcile failed:`, err.message);
+      // don't fail the sync — leave pendingReconcile true
+    }
+
+    perMapping.push({
+      mappingId: mapping.id,
+      name: mLabel,
+      fetched: rawUpserts.length,
+      added: result.added.length,
+      updated: result.updated.length,
+      deleted,
+      reconcile: reconcileResult,
+    });
   }
 
-  return {
-    mappingId: mapping.id,
-    name: label,
-    fetched: rawTransactions ? rawTransactions.length : 0,
-    added: result.added.length,
-    updated: result.updated.length,
-    needsReconnect,
-    connectionStatus: connection?.status || null,
-    reconcile: reconcileResult,
-  };
+  return { perMapping, nextCursor, updateStatus, imported: true };
 }
 
-// Run a sync for a single mapping by id. Used by the per-mapping "Sync" button.
+// Group active mappings by their Item. Returns [{ item, mappings }] plus buckets
+// of skipped mappings for reporting.
+function planItemSyncs(config) {
+  const itemsById = new Map(config.items.map(it => [it.itemId, it]));
+  const byItem = new Map();
+  const invalid = [];
+  const disabled = [];
+
+  for (const m of config.mappings) {
+    if (m.disabled) {
+      disabled.push({ mappingId: m.id, name: m.name });
+      continue;
+    }
+    if (!m.plaidAccountId || !m.actualAccountId || !m.itemId || !itemsById.has(m.itemId)) {
+      invalid.push({ mappingId: m.id, name: m.name, reason: "missing fields or unknown item (legacy mapping?)" });
+      continue;
+    }
+    if (!byItem.has(m.itemId)) byItem.set(m.itemId, []);
+    byItem.get(m.itemId).push(m);
+  }
+
+  const plans = [...byItem.entries()].map(([itemId, mappings]) => ({
+    item: itemsById.get(itemId),
+    mappings,
+  }));
+  return { plans, invalid, disabled };
+}
+
+// Shared per-item runner: syncs, persists cursor + item/mapping state, logs.
+// Returns { ok, perMapping } — never throws for item-level failures.
+async function runItemSync({ item, mappings, plaidConfig, backupDir }) {
+  try {
+    const { perMapping, nextCursor, imported } =
+      await syncOneItem({ item, mappings, plaidConfig, backupDir });
+
+    // Persist the cursor ONLY after every mapping's import succeeded —
+    // a failed run re-fetches the same window and dedups by imported_id.
+    if (imported && nextCursor) {
+      updateItemState(item.itemId, {
+        cursor: nextCursor,
+        lastSyncedAt: new Date().toISOString(),
+        needsReconnect: false,
+        lastError: null,
+      });
+    }
+
+    for (const stats of perMapping) {
+      updateMappingState(stats.mappingId, {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncStatus: "success",
+        lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated, deleted: stats.deleted },
+        lastError: null,
+        needsReconnect: false,
+      });
+    }
+
+    return { ok: true, perMapping };
+  } catch (err) {
+    const isAuth = err instanceof PlaidApiError && err.needsReconnect;
+    const message = err?.message || String(err);
+    console.error(`❌ [${item.institution || item.itemId}] sync failed:`, err);
+
+    updateItemState(item.itemId, {
+      needsReconnect: isAuth,
+      lastError: message,
+    });
+    for (const m of mappings) {
+      updateMappingState(m.id, {
+        lastSyncAt: new Date().toISOString(),
+        lastSyncStatus: isAuth ? "auth_error" : "error",
+        lastError: message,
+        needsReconnect: isAuth,
+      });
+    }
+
+    return {
+      ok: false,
+      isAuth,
+      message,
+      perMapping: mappings.map(m => ({ mappingId: m.id, name: m.name || m.id, message, isAuth })),
+    };
+  }
+}
+
+// Sync the Item that contains the given mapping. Used by the per-mapping "Sync"
+// button — the whole Item syncs (shared cursor), stats returned for the mapping.
 async function runSyncForMapping(mappingId) {
   const config = loadConfig();
   const mapping = (config.mappings || []).find(m => m.id === mappingId);
   if (!mapping) throw new Error(`Mapping not found: ${mappingId}`);
-  if (!mapping.quilttAccountId || !mapping.actualAccountId) {
-    throw new Error(`Mapping ${mappingId} is incomplete`);
+
+  const { plans } = planItemSyncs(config);
+  const plan = plans.find(p => p.mappings.some(m => m.id === mappingId));
+  if (!plan) throw new Error(`Mapping ${mappingId} is incomplete, disabled, or its bank Item is missing`);
+
+  if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
+    throw new Error("Missing Actual Budget configuration (serverURL/password/syncId)");
   }
 
   let initOk = false;
   try {
-    if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
-      throw new Error("Missing Actual Budget configuration (serverURL/password/syncId)");
-    }
     await initActual(config);
     initOk = true;
 
-    const startDate = getTransactionStartDate(config.sync.daysToSync);
     const backupDir = path.join(__dirname, "transaction-data");
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
-    const stats = await syncOneMapping({ mapping, quilttConfig: config.quiltt, startDate, backupDir });
-
-    updateMappingState(mappingId, {
-      lastSyncAt: new Date().toISOString(),
-      lastSyncStatus: "success",
-      lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
-      lastError: null,
-      needsReconnect: stats.needsReconnect,
-    });
-
-    saveSyncLog("SUCCESS", `Mapping sync: ${mapping.name}`, { mappingId, ...stats });
+    const result = await runItemSync({ ...plan, plaidConfig: config.plaid, backupDir });
     await actual.shutdown();
+
+    if (!result.ok) {
+      const err = new Error(result.message);
+      err.needsReconnect = result.isAuth;
+      throw err;
+    }
+
+    const stats = result.perMapping.find(s => s.mappingId === mappingId)
+      || { mappingId, fetched: 0, added: 0, updated: 0, deleted: 0 };
+    saveSyncLog("SUCCESS", `Mapping sync: ${mapping.name}`, { mappingId, ...stats });
     return stats;
   } catch (error) {
     if (initOk) { try { await actual.shutdown(); } catch (_) {} }
-    const isAuth = error?.name === "QuilttAuthError";
-    updateMappingState(mappingId, {
-      lastSyncAt: new Date().toISOString(),
-      lastSyncStatus: isAuth ? "auth_error" : "error",
-      lastError: error?.message || String(error),
-      needsReconnect: isAuth,
-    });
-    saveSyncLog("ERROR", `Mapping sync failed: ${mapping.name}: ${error?.message}`, { mappingId, isAuth });
+    saveSyncLog("ERROR", `Mapping sync failed: ${mapping.name}: ${error?.message}`, { mappingId });
     throw error;
   }
 }
 
-// Main sync — iterates all mappings, isolating failures per mapping
+// Main sync — iterates all Items, isolating failures per Item
 async function runSync() {
   console.log("🔄 Starting sync process...");
 
@@ -393,72 +534,30 @@ async function runSync() {
   try {
     const config = loadConfig();
 
-    if (config.mappings.length === 0) {
-      throw new Error("No account mappings configured. Add at least one mapping in the admin UI.");
+    if (!config.plaid.clientId || !config.plaid.secret) {
+      throw new Error("Missing Plaid configuration (clientId/secret). Configure it via /connect first.");
     }
     if (!config.actual.serverURL || !config.actual.password || !config.actual.syncId) {
       throw new Error("Missing Actual Budget configuration (serverURL/password/syncId)");
     }
-    if (!config.quiltt.apiSecret || !config.quiltt.profileId) {
-      throw new Error("Missing Quiltt configuration (apiSecret/profileId). Connect a bank via /connect first.");
+
+    const { plans, invalid, disabled } = planItemSyncs(config);
+    if (plans.length === 0) {
+      throw new Error("No active account mappings configured. Add at least one mapping in the admin UI.");
     }
 
-    console.log(`✓ Found ${config.mappings.length} mapping(s)`);
-    console.log(`  Days to sync: ${config.sync.daysToSync}`);
+    console.log(`✓ Syncing ${plans.length} bank connection(s), ${plans.reduce((n, p) => n + p.mappings.length, 0)} mapping(s)`);
 
     await initActual(config);
     initOk = true;
 
-    const startDate = getTransactionStartDate(config.sync.daysToSync);
     const backupDir = path.join(__dirname, "transaction-data");
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
-    // Bucket mappings: valid / disabled / invalid
-    const valid = [];
-    const invalid = [];
-    const disabled = [];
-    for (const m of config.mappings) {
-      if (m.disabled) {
-        disabled.push({ mappingId: m.id, name: m.name });
-        continue;
-      }
-      if (!m.quilttAccountId || !m.actualAccountId) {
-        invalid.push({ mappingId: m.id, name: m.name, reason: "missing fields (legacy Teller mapping?)" });
-        continue;
-      }
-      valid.push(m);
-    }
-
     const perMapping = [];
-    for (const mapping of valid) {
-      try {
-        const stats = await syncOneMapping({ mapping, quilttConfig: config.quiltt, startDate, backupDir });
-        perMapping.push({ ok: true, ...stats });
-        updateMappingState(mapping.id, {
-          lastSyncAt: new Date().toISOString(),
-          lastSyncStatus: "success",
-          lastSyncStats: { fetched: stats.fetched, added: stats.added, updated: stats.updated },
-          lastError: null,
-          needsReconnect: stats.needsReconnect,
-        });
-      } catch (err) {
-        const isAuth = err?.name === "QuilttAuthError";
-        const detail = {
-          mappingId: mapping.id,
-          name: mapping.name || mapping.id,
-          message: err?.message || String(err),
-          stack: err?.stack,
-          isAuth,
-        };
-        console.error(`❌ [${detail.name}] sync failed:`, err);
-        perMapping.push({ ok: false, ...detail });
-        updateMappingState(mapping.id, {
-          lastSyncAt: new Date().toISOString(),
-          lastSyncStatus: isAuth ? "auth_error" : "error",
-          lastError: detail.message,
-          needsReconnect: isAuth,
-        });
-      }
+    for (const plan of plans) {
+      const result = await runItemSync({ ...plan, plaidConfig: config.plaid, backupDir });
+      perMapping.push(...result.perMapping.map(s => ({ ok: result.ok, ...s })));
     }
 
     const totals = perMapping.reduce(
@@ -466,10 +565,11 @@ async function runSync() {
         fetched: acc.fetched + (r.fetched || 0),
         added: acc.added + (r.added || 0),
         updated: acc.updated + (r.updated || 0),
+        deleted: acc.deleted + (r.deleted || 0),
         succeeded: acc.succeeded + (r.ok ? 1 : 0),
         failed: acc.failed + (r.ok ? 0 : 1),
       }),
-      { fetched: 0, added: 0, updated: 0, succeeded: 0, failed: 0 }
+      { fetched: 0, added: 0, updated: 0, deleted: 0, succeeded: 0, failed: 0 }
     );
 
     if (totals.failed === 0 && invalid.length === 0) {
@@ -483,8 +583,8 @@ async function runSync() {
     }
 
     console.log("\n📊 Sync summary:");
-    console.log(`   Mappings: ${totals.succeeded}/${valid.length} succeeded, ${invalid.length} invalid, ${disabled.length} disabled`);
-    console.log(`   Fetched: ${totals.fetched}, Added: ${totals.added}, Updated: ${totals.updated}`);
+    console.log(`   Mappings: ${totals.succeeded}/${perMapping.length} succeeded, ${invalid.length} invalid, ${disabled.length} disabled`);
+    console.log(`   Fetched: ${totals.fetched}, Added: ${totals.added}, Updated: ${totals.updated}, Deleted: ${totals.deleted}`);
 
     await actual.shutdown();
   } catch (error) {
@@ -520,7 +620,9 @@ export {
   runSyncForMapping,
   loadConfig,
   saveMappings,
-  saveQuilttConfig,
+  saveItems,
+  savePlaidConfig,
   updateMappingState,
+  updateItemState,
   newMappingId,
 };

@@ -1,11 +1,12 @@
-// Bank connection flow using the Quiltt Connector.
+// Bank connection flow using Plaid Link.
 //
-// 1. If Quiltt credentials (API secret + Connector ID) are missing, collect and save them.
-// 2. Issue a session token server-side, authenticate the Connector, open the modal.
-// 3. On success, poll for the new connection's accounts and hand off to setup/admin.
+// 1. If Plaid credentials are missing, collect and save them (client ID + secret + env).
+// 2. Fetch a link_token server-side, open Plaid Link.
+// 3. onSuccess: exchange the public_token server-side (stores the Item), then
+//    show the accounts straight from Link's metadata — no polling needed.
 
-const CONNECTOR_ID = window.QUILTT_CONFIG?.connectorId;
-const HAS_CREDENTIALS = window.QUILTT_CONFIG?.hasCredentials === true;
+const PLAID_ENV = window.PLAID_CONFIG?.env || "sandbox";
+const HAS_CREDENTIALS = window.PLAID_CONFIG?.hasCredentials === true;
 
 const steps = {
   credentials: document.getElementById('credentials-step'),
@@ -42,11 +43,13 @@ function escapeHtml(s) {
 document.getElementById('credentialsForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('credentialsBtn');
-  const apiSecret = document.getElementById('apiSecret').value.trim();
-  const connectorId = document.getElementById('connectorId').value.trim();
+  const clientId = document.getElementById('clientId').value.trim();
+  const secret = document.getElementById('secret').value.trim();
+  const env = document.getElementById('env').value;
+  const daysRequested = document.getElementById('daysRequested').value;
 
-  if (!apiSecret || !connectorId) {
-    showStatus('Please fill in both fields', 'error');
+  if (!clientId || !secret) {
+    showStatus('Please fill in client ID and secret', 'error');
     return;
   }
 
@@ -54,18 +57,18 @@ document.getElementById('credentialsForm').addEventListener('submit', async (e) 
   btn.textContent = 'Saving...';
 
   try {
-    const res = await fetch('/api/setup/save-quiltt', {
+    const res = await fetch('/api/setup/save-plaid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiSecret, connectorId }),
+      body: JSON.stringify({ clientId, secret, env, daysRequested }),
     });
     const result = await res.json();
     if (!res.ok || !result.success) throw new Error(result.error || 'Failed to save');
 
-    // Verify the secret actually works before proceeding
-    const testRes = await fetch('/api/test/quiltt', { method: 'POST' });
+    // Verify the credentials actually work (creating a link token is free)
+    const testRes = await fetch('/api/test/plaid', { method: 'POST' });
     const test = await testRes.json();
-    if (!test.success) throw new Error(`Saved, but Quiltt rejected the API secret: ${test.error}`);
+    if (!test.success) throw new Error(`Saved, but Plaid rejected the credentials: ${test.error}`);
 
     showStatus('✅ Credentials saved! Reloading...', 'success');
     setTimeout(() => window.location.reload(), 800);
@@ -76,103 +79,97 @@ document.getElementById('credentialsForm').addEventListener('submit', async (e) 
   }
 });
 
-/* ---------------- Step 2: launch Connector ---------------- */
+/* ---------------- Step 2: launch Plaid Link ---------------- */
 
-async function fetchSessionToken() {
-  const res = await fetch('/api/quiltt/session', { method: 'POST' });
+async function fetchLinkToken() {
+  const res = await fetch('/api/plaid/link-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `Session request failed (${res.status})`);
-  return data;
+  if (!res.ok) throw new Error(data.error || `Link token request failed (${res.status})`);
+  return data.linkToken;
 }
 
-async function launchConnector() {
+async function launchLink() {
   const btn = document.getElementById('connectBtn');
   btn.disabled = true;
   btn.textContent = 'Preparing...';
   hideStatus();
 
   try {
-    if (!window.Quiltt) throw new Error('Quiltt Connector script failed to load. Refresh the page.');
-    if (!CONNECTOR_ID) throw new Error('Connector ID is not configured.');
+    if (!window.Plaid) throw new Error('Plaid Link script failed to load. Refresh the page.');
 
-    const session = await fetchSessionToken();
-    window.Quiltt.authenticate(session.token);
-
-    const connector = window.Quiltt.connect(CONNECTOR_ID, {
-      onExitSuccess: (metadata) => handleConnected(metadata),
-      onExitError: (metadata) => {
-        console.error('Connector error:', metadata);
-        showStatus('❌ Something went wrong in the connection flow. Please try again.', 'error');
-        btn.disabled = false;
-        btn.textContent = 'Connect Bank Account';
-      },
-      onExitAbort: () => {
+    const linkToken = await fetchLinkToken();
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: (publicToken, metadata) => handleLinked(publicToken, metadata),
+      onExit: (err) => {
+        if (err) {
+          console.error('Link exited with error:', err);
+          showStatus(`❌ ${err.display_message || err.error_message || 'Connection flow failed. Please try again.'}`, 'error');
+        }
         btn.disabled = false;
         btn.textContent = 'Connect Bank Account';
       },
     });
-    connector.open();
+    handler.open();
     btn.textContent = 'Connect Bank Account';
   } catch (error) {
-    console.error('Failed to launch Connector:', error);
+    console.error('Failed to launch Plaid Link:', error);
     showStatus('❌ ' + error.message, 'error');
     btn.disabled = false;
     btn.textContent = 'Connect Bank Account';
   }
 }
 
-document.getElementById('connectBtn').addEventListener('click', launchConnector);
+document.getElementById('connectBtn').addEventListener('click', launchLink);
 
-/* ---------------- Step 3: connection success ---------------- */
-
-function formatBalance(balance) {
-  if (balance == null) return '';
-  return Number(balance).toLocaleString(undefined, { style: 'currency', currency: 'USD' });
-}
+/* ---------------- Step 3: exchange + success ---------------- */
 
 function renderAccounts(accounts) {
   const list = document.getElementById('accountList');
   if (!accounts.length) {
-    list.innerHTML = '<p>Accounts are still syncing — they\'ll appear in the admin dashboard shortly.</p>';
+    list.innerHTML = '<p>No account details returned — they\'ll appear in the admin dashboard.</p>';
     return;
   }
   list.innerHTML = accounts.map(a => `
     <div class="account-item">
       <div>
         <div class="name">${escapeHtml(a.name || a.id)}</div>
-        <div class="meta">${escapeHtml([a.institution, a.kind].filter(Boolean).join(' · '))}</div>
+        <div class="meta">${escapeHtml([a.subtype || a.type, a.mask ? '••' + a.mask : null].filter(Boolean).join(' · '))}</div>
       </div>
-      <div class="balance">${formatBalance(a.balance)}</div>
     </div>
   `).join('');
 }
 
-// Quiltt syncs the connection in the background right after the Connector flow;
-// accounts can take a few seconds to appear in the API. Poll briefly.
-async function pollAccountsForConnection(connectionId, attempts = 10, delayMs = 2000) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const res = await fetch('/api/quiltt/accounts');
-      const data = await res.json();
-      if (res.ok) {
-        const matched = connectionId
-          ? (data.accounts || []).filter(a => a.connectionId === connectionId)
-          : (data.accounts || []);
-        if (matched.length > 0) return matched;
-      }
-    } catch (_) { /* transient — retry */ }
-    await new Promise(r => setTimeout(r, delayMs));
-  }
-  return [];
-}
-
-async function handleConnected(metadata) {
-  console.log('Connected:', metadata);
+async function handleLinked(publicToken, metadata) {
   showStep('success');
   hideStatus();
+  document.getElementById('successSubtitle').textContent = 'Saving connection...';
 
-  const accounts = await pollAccountsForConnection(metadata?.connectionId);
-  renderAccounts(accounts);
+  try {
+    const res = await fetch('/api/plaid/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicToken,
+        institution: metadata?.institution?.name || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Token exchange failed');
+
+    const inst = metadata?.institution?.name;
+    document.getElementById('successSubtitle').textContent =
+      `${inst ? inst + ' linked' : 'Bank linked'} (connection ${data.itemCount}/${data.itemLimit}). Accounts:`;
+    renderAccounts(metadata?.accounts || []);
+  } catch (error) {
+    console.error('Exchange failed:', error);
+    showStatus('❌ Failed to save the connection: ' + error.message, 'error');
+    showStep('connect');
+  }
 }
 
 document.getElementById('continueBtn').addEventListener('click', async () => {
@@ -187,9 +184,14 @@ document.getElementById('continueBtn').addEventListener('click', async () => {
 
 document.getElementById('connectAnotherBtn').addEventListener('click', () => {
   showStep('connect');
-  launchConnector();
+  launchLink();
 });
 
 /* ---------------- Bootstrap ---------------- */
+
+const badge = document.getElementById('envBadge');
+badge.textContent = PLAID_ENV;
+badge.classList.add(PLAID_ENV);
+document.getElementById('trialWarning').classList.toggle('hidden', PLAID_ENV !== 'production');
 
 showStep(HAS_CREDENTIALS ? 'connect' : 'credentials');

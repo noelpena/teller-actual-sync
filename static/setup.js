@@ -39,7 +39,6 @@ document.addEventListener('DOMContentLoaded', function() {
       serverURL: document.getElementById('serverURL').value.trim(),
       password: document.getElementById('password').value,
       syncId: document.getElementById('syncId').value.trim(),
-      daysToSync: document.getElementById('daysToSync').value || '7',
       cronSchedule: document.getElementById('cronSchedule').value.trim() || '0 2 * * *'
     };
   }
@@ -162,7 +161,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const response = await fetch(`${BASE_URL}/api/config/status`);
       const status = await response.json();
 
-      if (status.hasActualConfig && status.hasQuilttConfig) {
+      if (status.hasActualConfig && status.hasPlaidConfig) {
         console.log('Configuration complete, redirecting to /admin');
         window.location.href = '/admin';
       }

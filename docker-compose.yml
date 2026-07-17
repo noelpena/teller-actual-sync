@@ -1,5 +1,5 @@
 services:
-  quiltt-actual-sync:
+  plaid-actual-sync:
     # Option 1: Use the pre-built image from Docker Hub (recommended)
     image: noelpena/teller-actual-sync:latest
 
@@ -7,7 +7,7 @@ services:
     # Comment out the 'image:' line above and uncomment the line below.
     # build: .
 
-    container_name: quiltt-actual-sync
+    container_name: plaid-actual-sync
     restart: always
     ports:
       - "8001:8001"
@@ -28,13 +28,13 @@ services:
       # uncomment these if you prefer to configure via a .env file and skip
       # the wizard. Leaving them commented avoids "variable not set" warnings.
       #
-      # - QUILTT_API_SECRET=${QUILTT_API_SECRET}
-      # - QUILTT_CONNECTOR_ID=${QUILTT_CONNECTOR_ID}
-      # - QUILTT_PROFILE_ID=${QUILTT_PROFILE_ID}
+      # - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
+      # - PLAID_SECRET=${PLAID_SECRET}
+      # - PLAID_ENV=${PLAID_ENV:-sandbox}
+      # - PLAID_DAYS_REQUESTED=${PLAID_DAYS_REQUESTED:-90}
       # - ACTUAL_SERVER_URL=${ACTUAL_SERVER_URL}
       # - ACTUAL_PASSWORD=${ACTUAL_PASSWORD}
       # - ACTUAL_SYNC_ID=${ACTUAL_SYNC_ID}
-      # - DAYS_TO_SYNC=${DAYS_TO_SYNC:-7}
       # - CRON_SCHEDULE=${CRON_SCHEDULE:-0 8 * * *}
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8001/ping"]
@@ -48,7 +48,7 @@ x-casaos:
   architectures:
     - amd64
     - arm64
-  main: quiltt-actual-sync
+  main: plaid-actual-sync
   author: noelpena
   developer: noelpena
   category: Finance
@@ -58,8 +58,8 @@ x-casaos:
   index: /
   icon: https://actual-budget.com/img/favicon.png
   title:
-    en_us: Quiltt-Actual Sync
+    en_us: Plaid-Actual Sync
   tagline:
-    en_us: Sync bank transactions to Actual Budget with Quiltt
+    en_us: Sync bank transactions to Actual Budget with Plaid
   description:
-    en_us: Automated bank transaction sync from Quiltt to Actual Budget.
+    en_us: Automated bank transaction sync from Plaid to Actual Budget.

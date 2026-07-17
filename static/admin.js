@@ -20,7 +20,7 @@ document.querySelectorAll('.tab-button').forEach(button => {
     // Load data for the tab
     if (tabName === 'dashboard') loadDashboard();
     if (tabName === 'config') loadConfig();
-    if (tabName === 'mappings') loadMappings();
+    if (tabName === 'mappings') { loadItems(); loadMappings(); }
     if (tabName === 'logs') loadLogs();
   });
 });
@@ -40,6 +40,16 @@ function showToast(message, type = 'success') {
     toast.classList.add('hidden');
   }, 3000);
 }
+
+// Environment pill in the navbar
+(function initEnvPill() {
+  const pill = document.getElementById('envPill');
+  const env = window.PLAID_CONFIG?.env || 'sandbox';
+  pill.textContent = env;
+  pill.className = `ml-2 px-2 py-1 text-xs rounded ${
+    env === 'production' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'
+  }`;
+})();
 
 // Load Dashboard
 async function loadDashboard() {
@@ -64,86 +74,81 @@ async function loadDashboard() {
       document.getElementById('lastSyncCount').textContent = '0';
     }
 
-    // Load current config
-    const configRes = await fetch('/admin/api/config');
+    // Load current config + status
+    const [configRes, statusRes] = await Promise.all([
+      fetch('/admin/api/config'),
+      fetch('/api/config/status'),
+    ]);
     const config = await configRes.json();
+    const status = await statusRes.json();
 
-    document.getElementById('configConnectorId').textContent = config.QUILTT_CONNECTOR_ID || 'Not set';
-    document.getElementById('configProfileId').textContent = config.QUILTT_PROFILE_ID || 'Not created yet';
+    document.getElementById('configPlaidEnv').textContent = config.PLAID_ENV || 'sandbox';
+    document.getElementById('configItemCount').textContent =
+      status.plaidEnv === 'production'
+        ? `${status.itemCount} / ${status.itemLimit} (Trial plan limit)`
+        : `${status.itemCount}`;
     document.getElementById('configActualServer').textContent = config.ACTUAL_SERVER_URL || 'Not set';
-    document.getElementById('configDaysToSync').textContent = config.DAYS_TO_SYNC || '7';
+    document.getElementById('configDaysRequested').textContent = `${config.PLAID_DAYS_REQUESTED || 90} days`;
     document.getElementById('configCronSchedule').textContent = config.CRON_SCHEDULE || '0 2 * * *';
 
-    // Load setup status
-    await loadSetupStatus();
-
+    renderSetupStatus(status);
   } catch (error) {
     console.error('Error loading dashboard:', error);
     showToast('Error loading dashboard', 'error');
   }
 }
 
-// Load setup status and check configuration completeness
-async function loadSetupStatus() {
-  try {
-    const statusRes = await fetch('/api/config/status');
-    const status = await statusRes.json();
+// Setup status cards
+function renderSetupStatus(status) {
+  const plaidIcon = document.getElementById('plaidStatusIcon');
+  const plaidText = document.getElementById('plaidStatusText');
+  const plaidCard = document.getElementById('plaidStatusCard');
 
-    // Update Quiltt status
-    const quilttIcon = document.getElementById('quilttStatusIcon');
-    const quilttText = document.getElementById('quilttStatusText');
-    const quilttCard = document.getElementById('quilttStatusCard');
-
-    if (status.hasQuilttConfig) {
-      quilttIcon.textContent = '✅';
-      quilttText.textContent = `Connected — ${status.validMappingCount} mapped account${status.validMappingCount === 1 ? '' : 's'}`;
-      quilttCard.classList.remove('border-yellow-300', 'bg-yellow-50');
-      quilttCard.classList.add('border-green-300', 'bg-green-50');
+  if (status.hasPlaidConfig) {
+    plaidIcon.textContent = '✅';
+    plaidText.textContent = `Connected — ${status.itemCount} bank(s), ${status.validMappingCount} mapped account${status.validMappingCount === 1 ? '' : 's'}`;
+    plaidCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+    plaidCard.classList.add('border-green-300', 'bg-green-50');
+  } else {
+    plaidIcon.textContent = '⚠️';
+    if (!status.hasPlaidCredentials) {
+      plaidText.textContent = 'Not configured - add your Plaid client ID and secret';
+    } else if (status.itemCount === 0) {
+      plaidText.textContent = 'Credentials saved - connect your first bank account';
     } else {
-      quilttIcon.textContent = '⚠️';
-      if (!status.hasQuilttCredentials) {
-        quilttText.textContent = 'Not configured - add your Quiltt API secret and Connector ID';
-      } else if (!status.hasProfile) {
-        quilttText.textContent = 'Credentials saved - connect your first bank account';
-      } else {
-        quilttText.textContent = 'Bank connected - map accounts in the Account Mappings tab';
-      }
-      quilttCard.classList.remove('border-green-300', 'bg-green-50');
-      quilttCard.classList.add('border-yellow-300', 'bg-yellow-50');
+      plaidText.textContent = 'Bank connected - map accounts in the Account Mappings tab';
     }
+    plaidCard.classList.remove('border-green-300', 'bg-green-50');
+    plaidCard.classList.add('border-yellow-300', 'bg-yellow-50');
+  }
 
-    // Update Actual Budget status
-    const actualIcon = document.getElementById('actualStatusIcon');
-    const actualText = document.getElementById('actualStatusText');
-    const actualCard = document.getElementById('actualStatusCard');
+  const actualIcon = document.getElementById('actualStatusIcon');
+  const actualText = document.getElementById('actualStatusText');
+  const actualCard = document.getElementById('actualStatusCard');
 
-    if (status.hasActualConfig) {
-      actualIcon.textContent = '✅';
-      actualText.textContent = 'Connected and configured';
-      actualCard.classList.remove('border-yellow-300', 'bg-yellow-50');
-      actualCard.classList.add('border-green-300', 'bg-green-50');
-    } else {
-      actualIcon.textContent = '⚠️';
-      actualText.textContent = 'Not configured - Set up Actual Budget connection';
-      actualCard.classList.remove('border-green-300', 'bg-green-50');
-      actualCard.classList.add('border-yellow-300', 'bg-yellow-50');
-    }
-
-  } catch (error) {
-    console.error('Error loading setup status:', error);
+  if (status.hasActualConfig) {
+    actualIcon.textContent = '✅';
+    actualText.textContent = 'Connected and configured';
+    actualCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+    actualCard.classList.add('border-green-300', 'bg-green-50');
+  } else {
+    actualIcon.textContent = '⚠️';
+    actualText.textContent = 'Not configured - Set up Actual Budget connection';
+    actualCard.classList.remove('border-green-300', 'bg-green-50');
+    actualCard.classList.add('border-yellow-300', 'bg-yellow-50');
   }
 }
 
-// Test Quiltt connection
-async function testQuilttConnection() {
-  const btn = document.getElementById('testQuilttBtn');
+// Test Plaid connection
+async function testPlaidConnection() {
+  const btn = document.getElementById('testPlaidBtn');
   const originalText = btn.textContent;
 
   try {
     btn.textContent = 'Testing...';
     btn.disabled = true;
 
-    const testRes = await fetch('/api/test/quiltt', {
+    const testRes = await fetch('/api/test/plaid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -152,14 +157,13 @@ async function testQuilttConnection() {
     const result = await testRes.json();
 
     if (result.success) {
-      const detail = result.accountCount != null ? ` — ${result.accountCount} account(s) on profile` : '';
-      showToast(`✅ Connected to Quiltt${detail}`, 'success');
+      showToast(`✅ Connected to Plaid (${result.env}) — ${result.itemCount} bank connection(s)`, 'success');
     } else {
       showToast(`❌ Connection failed: ${result.error}`, 'error');
     }
 
   } catch (error) {
-    console.error('Error testing Quiltt connection:', error);
+    console.error('Error testing Plaid connection:', error);
     showToast(`❌ Failed to test connection: ${error.message}`, 'error');
   } finally {
     btn.textContent = originalText;
@@ -276,15 +280,12 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     const config = Object.fromEntries(formData.entries());
 
     // Remove password fields that haven't been modified (they contain masked values)
-    const passwordFields = ['QUILTT_API_SECRET', 'ACTUAL_PASSWORD'];
+    const passwordFields = ['PLAID_SECRET', 'ACTUAL_PASSWORD'];
     passwordFields.forEach(field => {
       if (!modifiedFields.has(field)) {
         delete config[field];
       }
     });
-
-    // Profile ID is managed by the server — never submit it
-    delete config.QUILTT_PROFILE_ID;
 
     const res = await fetch('/admin/api/config', {
       method: 'POST',
@@ -346,7 +347,7 @@ async function loadLogs() {
             </div>
             ${log.stats ? `
               <div class="text-sm text-gray-600">
-                ${log.stats.added || 0} added, ${log.stats.updated || 0} updated
+                ${log.stats.added || 0} added, ${log.stats.updated || 0} updated${log.stats.deleted ? `, ${log.stats.deleted} deleted` : ''}
               </div>
             ` : ''}
           </div>
@@ -392,53 +393,132 @@ document.getElementById('syncNowBtn').addEventListener('click', async () => {
 });
 
 // Test connection button event listeners
-document.getElementById('testQuilttBtn').addEventListener('click', testQuilttConnection);
+document.getElementById('testPlaidBtn').addEventListener('click', testPlaidConnection);
 document.getElementById('testActualBtn').addEventListener('click', testActualConnection);
 
-// ===== Quiltt Connector helpers =====
+// ===== Plaid Link helpers =====
 
-// Issue a session token and authenticate the Connector SDK.
-// Returns the connector ID to use.
-async function prepareConnector() {
-  if (!window.Quiltt) throw new Error('Quiltt Connector script not loaded. Refresh the page.');
-  const connectorId = window.QUILTT_CONFIG?.connectorId;
-  if (!connectorId) throw new Error('Quiltt Connector ID is not configured. Set it under Configuration.');
-
-  const res = await fetch('/api/quiltt/session', { method: 'POST' });
+// Fetch a link token; pass itemId for update mode (repairing a broken Item)
+async function fetchLinkToken(itemId) {
+  const res = await fetch('/api/plaid/link-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(itemId ? { itemId } : {}),
+  });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `Session request failed (${res.status})`);
-
-  window.Quiltt.authenticate(data.token);
-  return connectorId;
+  if (!res.ok) throw new Error(data.error || `Link token request failed (${res.status})`);
+  return data.linkToken;
 }
 
-// Repair a broken connection via the Connector's reconnect flow
-async function repairConnection(connectionId, btn) {
+// Repair a broken Item via Link update mode. The Item keeps its access_token —
+// the onSuccess public_token must NOT be exchanged.
+async function repairItem(itemId, btn) {
   const original = btn ? btn.textContent : null;
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
 
   try {
-    const connectorId = await prepareConnector();
-    const reconnector = window.Quiltt.reconnect(connectorId, {
-      connectionId,
-      onExitSuccess: async () => {
+    if (!window.Plaid) throw new Error('Plaid Link script not loaded. Refresh the page.');
+    const linkToken = await fetchLinkToken(itemId);
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: async () => {
         try {
-          await fetch('/api/mappings/reconnected', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ connectionId }),
-          });
+          await fetch(`/api/plaid/items/${encodeURIComponent(itemId)}/reconnected`, { method: 'POST' });
         } catch (_) { /* flag clears on next successful sync anyway */ }
         showToast('Connection repaired!', 'success');
+        loadItems();
         loadMappings();
       },
-      onExitError: () => showToast('Reconnect flow failed. Try again.', 'error'),
+      onExit: (err) => {
+        if (err) showToast(`Repair failed: ${err.display_message || err.error_message || 'try again'}`, 'error');
+      },
     });
-    reconnector.open();
+    handler.open();
   } catch (error) {
-    showToast(`Reconnect failed: ${error.message}`, 'error');
+    showToast(`Repair failed: ${error.message}`, 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+// ===== Bank Connections (Items) =====
+
+async function loadItems() {
+  const container = document.getElementById('itemsTable');
+  const countEl = document.getElementById('itemsCount');
+  try {
+    const res = await fetch('/api/plaid/items');
+    const { items, itemCount, itemLimit } = await res.json();
+
+    const env = window.PLAID_CONFIG?.env || 'sandbox';
+    countEl.textContent = env === 'production'
+      ? `${itemCount} / ${itemLimit} connections used`
+      : `${itemCount} connection${itemCount === 1 ? '' : 's'} (sandbox)`;
+
+    if (!items.length) {
+      container.innerHTML = '<div class="p-6 text-center text-gray-500">No banks connected yet.</div>';
+      return;
+    }
+
+    container.innerHTML = items.map(it => {
+      const badge = it.needsReconnect
+        ? '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Needs reconnect</span>'
+        : (it.lastError
+          ? '<span class="px-2 py-0.5 text-xs rounded bg-red-100 text-red-800">Error</span>'
+          : '<span class="px-2 py-0.5 text-xs rounded bg-green-100 text-green-800">OK</span>');
+      const errLine = it.lastError
+        ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(it.lastError).slice(0, 200)}</div>`
+        : '';
+      return `
+        <div class="p-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <div class="font-medium">${escapeHtml(it.institution || 'Unknown institution')}</div>
+                ${badge}
+              </div>
+              <div class="text-xs text-gray-500 font-mono mt-1">
+                ${escapeHtml(it.itemId)} · ${it.mappingCount} mapping${it.mappingCount === 1 ? '' : 's'} · last sync ${relativeTime(it.lastSyncedAt)}
+              </div>
+              ${errLine}
+            </div>
+            <div class="flex flex-col gap-1 shrink-0">
+              ${it.needsReconnect ? `<button data-id="${escapeHtml(it.itemId)}" class="repair-item px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>` : ''}
+              <button data-id="${escapeHtml(it.itemId)}" class="remove-item px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">Remove</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.repair-item').forEach(btn => {
+      btn.addEventListener('click', () => repairItem(btn.dataset.id, btn));
+    });
+    container.querySelectorAll('.remove-item').forEach(btn => {
+      btn.addEventListener('click', () => removeItem(btn.dataset.id));
+    });
+  } catch (error) {
+    console.error('Error loading items:', error);
+    container.innerHTML = '<div class="p-6 text-center text-red-500">Error loading connections</div>';
+  }
+}
+
+async function removeItem(itemId) {
+  const env = window.PLAID_CONFIG?.env || 'sandbox';
+  const warning = env === 'production'
+    ? 'Remove this bank connection?\n\n⚠️ On the Trial plan this does NOT free up a connection slot — the 10-connection limit counts every connection ever made.\n\nIts mappings will be disabled.'
+    : 'Remove this bank connection? Its mappings will be disabled.';
+  if (!confirm(warning)) return;
+
+  try {
+    const res = await fetch(`/api/plaid/items/${encodeURIComponent(itemId)}/remove`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Remove failed');
+    showToast(`Connection removed (${data.mappingsDisabled} mapping(s) disabled)`, 'success');
+    loadItems();
+    loadMappings();
+  } catch (error) {
+    showToast(`Failed: ${error.message}`, 'error');
   }
 }
 
@@ -486,13 +566,13 @@ async function loadMappings() {
 
     container.innerHTML = mappings.map(m => {
       const stats = m.lastSyncStats
-        ? `${m.lastSyncStats.added} added, ${m.lastSyncStats.updated} updated`
+        ? `${m.lastSyncStats.added} added, ${m.lastSyncStats.updated} updated${m.lastSyncStats.deleted ? `, ${m.lastSyncStats.deleted} deleted` : ''}`
         : '—';
       const errLine = m.lastError
         ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(m.lastError).slice(0, 200)}</div>`
         : '';
-      const reconnectBtn = m.needsReconnect && m.connectionId
-        ? `<button data-conn="${escapeHtml(m.connectionId)}" class="repair-mapping px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>`
+      const repairBtn = m.needsReconnect && m.itemId
+        ? `<button data-item="${escapeHtml(m.itemId)}" class="repair-mapping px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>`
         : '';
       return `
         <div class="p-4" data-mapping-id="${m.id}">
@@ -500,17 +580,18 @@ async function loadMappings() {
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <div class="font-medium">${escapeHtml(m.name || 'Unnamed')}</div>
+                ${m.institution ? `<span class="text-xs text-gray-500">${escapeHtml(m.institution)}</span>` : ''}
                 ${statusBadge(m)}
               </div>
               <div class="text-xs text-gray-500 font-mono mt-1 space-y-0.5">
-                <div>Quiltt acct: ${escapeHtml(m.quilttAccountId)}${m.connectionId ? ` (${escapeHtml(m.connectionId)})` : ''}</div>
+                <div>Plaid acct: ${escapeHtml(m.plaidAccountId)}</div>
                 <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
                 <div class="text-gray-400">Last sync: ${relativeTime(m.lastSyncAt)} · ${escapeHtml(stats)}</div>
               </div>
               ${errLine}
             </div>
             <div class="flex flex-col gap-1 shrink-0">
-              ${reconnectBtn}
+              ${repairBtn}
               <button data-id="${m.id}" class="sync-mapping px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Sync</button>
               <button data-id="${m.id}" class="reconcile-mapping px-3 py-1 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200">Reconcile</button>
               <button data-id="${m.id}" class="edit-mapping px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Edit</button>
@@ -535,7 +616,7 @@ async function loadMappings() {
       btn.addEventListener('click', () => toggleMapping(btn.dataset.id, btn.dataset.disabled === '1'));
     });
     container.querySelectorAll('.repair-mapping').forEach(btn => {
-      btn.addEventListener('click', () => repairConnection(btn.dataset.conn, btn));
+      btn.addEventListener('click', () => repairItem(btn.dataset.item, btn));
     });
     container.querySelectorAll('.edit-mapping').forEach(btn => {
       const m = mappings.find(x => x.id === btn.dataset.id);
@@ -639,7 +720,7 @@ function openEditMapping(mapping, actualAccounts) {
             </select>
           </div>
           <div class="text-xs text-gray-500 font-mono pt-1">
-            Quiltt account: ${escapeHtml(mapping.quilttAccountId)} (read-only — to change, delete and re-create the mapping)
+            Plaid account: ${escapeHtml(mapping.plaidAccountId)} (read-only — to change, delete and re-create the mapping)
           </div>
           <div class="flex justify-end gap-2 pt-2">
             <button type="button" id="editMappingCancel" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded">Cancel</button>
@@ -684,8 +765,8 @@ document.getElementById('addMappingForm').addEventListener('submit', async (e) =
   const fd = new FormData(form);
   const payload = {
     name: fd.get('name'),
-    quilttAccountId: fd.get('quilttAccountId'),
-    connectionId: fd.get('connectionId') || undefined,
+    itemId: fd.get('itemId'),
+    plaidAccountId: fd.get('plaidAccountId'),
     actualAccountId: fd.get('actualAccountId'),
   };
 
@@ -712,7 +793,7 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ===== Connect Another Bank (Quiltt Connector + account picker) =====
+// ===== Connect Another Bank (Plaid Link + account picker) =====
 
 let _actualAccountsCache = null;
 
@@ -743,57 +824,41 @@ async function fetchActualAccounts() {
   return _actualAccountsCache;
 }
 
-async function fetchQuilttAccounts() {
-  const res = await fetch('/api/quiltt/accounts');
+async function fetchPlaidAccounts() {
+  const res = await fetch('/api/plaid/accounts');
   const data = await safeJson(res);
   if (!res.ok) {
     const msg = errorMessage(data, `HTTP ${res.status}`);
-    console.error('fetchQuilttAccounts failed:', res.status, data);
+    console.error('fetchPlaidAccounts failed:', res.status, data);
     throw new Error(msg);
   }
   return data.accounts || [];
 }
 
-// Quiltt syncs new connections in the background — accounts can take a few
-// seconds to appear. Poll until the connection's accounts show up.
-async function pollQuilttAccountsForConnection(connectionId, attempts = 10, delayMs = 2000) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const accounts = await fetchQuilttAccounts();
-      const matched = connectionId
-        ? accounts.filter(a => a.connectionId === connectionId)
-        : accounts;
-      if (matched.length > 0) return matched;
-    } catch (_) { /* transient — retry */ }
-    await new Promise(r => setTimeout(r, delayMs));
-  }
-  return [];
-}
-
 // Smart default: investments and loans go off-budget in Actual; everything else on-budget.
-function suggestOffBudget(quilttAccount) {
-  const k = (quilttAccount?.kind || '').toUpperCase();
-  return k === 'INVESTMENT' || k === 'LOAN';
+function suggestOffBudget(plaidAccount) {
+  const t = (plaidAccount?.type || '').toLowerCase();
+  return t === 'investment' || t === 'loan';
 }
 
-function renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existingMappings) {
+function renderNewBankAccountsPicker(plaidAccounts, actualAccounts, existingMappings) {
   const list = document.getElementById('newBankAccountsList');
 
-  const mappedIds = new Set((existingMappings || []).map(m => m.quilttAccountId));
+  const mappedIds = new Set((existingMappings || []).map(m => m.plaidAccountId));
 
   const actualOptions = actualAccounts
     .filter(a => !a.closed)
     .map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}${a.offbudget ? ' (off-budget)' : ''}</option>`)
     .join('');
 
-  const unmapped = quilttAccounts.filter(a => !mappedIds.has(a.id));
-  const alreadyMapped = quilttAccounts.filter(a => mappedIds.has(a.id));
+  const unmapped = plaidAccounts.filter(a => !mappedIds.has(a.plaidAccountId));
+  const alreadyMapped = plaidAccounts.filter(a => mappedIds.has(a.plaidAccountId));
 
   if (unmapped.length === 0) {
     list.innerHTML = `
       <div class="text-sm text-gray-500">
-        ${quilttAccounts.length === 0
-          ? 'No accounts found yet. Quiltt may still be syncing — try again in a moment.'
+        ${plaidAccounts.length === 0
+          ? 'No accounts found.'
           : 'All accounts on this connection are already mapped.'}
       </div>`;
     return;
@@ -801,20 +866,20 @@ function renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existingMap
 
   const mappedRows = alreadyMapped.map(a => `
     <div class="border rounded-md p-3 bg-gray-50 text-sm text-gray-500">
-      ${escapeHtml(a.name || a.id)} — already mapped
+      ${escapeHtml(a.name || a.plaidAccountId)} — already mapped
     </div>
   `);
 
   const newRows = unmapped.map(a => {
-    const subtitle = [a.institution, a.kind].filter(Boolean).join(' · ');
+    const subtitle = [a.institution, a.subtype || a.type, a.mask ? '••' + a.mask : null].filter(Boolean).join(' · ');
     const offBudgetDefault = suggestOffBudget(a);
     return `
-      <div class="border rounded-md p-3" data-quiltt-id="${escapeHtml(a.id)}" data-connection-id="${escapeHtml(a.connectionId || '')}">
+      <div class="border rounded-md p-3" data-plaid-id="${escapeHtml(a.plaidAccountId)}" data-item-id="${escapeHtml(a.itemId || '')}">
         <div class="flex items-start justify-between gap-3 mb-2">
           <div class="flex-1 min-w-0">
-            <div class="font-medium">${escapeHtml(a.name || a.id)}</div>
+            <div class="font-medium">${escapeHtml(a.name || a.plaidAccountId)}</div>
             <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(a.id)}</div>
+            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(a.plaidAccountId)}</div>
           </div>
           <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
             <option value="create" selected>Create new Actual account</option>
@@ -857,7 +922,7 @@ function renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existingMap
   ].join('');
 
   // Wire up mode toggles
-  list.querySelectorAll('[data-quiltt-id]').forEach(row => {
+  list.querySelectorAll('[data-plaid-id]').forEach(row => {
     const sel = row.querySelector('.row-mode');
     if (!sel) return;
     const createBlock = row.querySelector('.mode-create');
@@ -885,8 +950,8 @@ function hideNewBankPanel() {
   document.getElementById('newBankAccountsList').innerHTML = '';
 }
 
-// Show the account picker for a set of Quiltt accounts
-async function openAccountPicker(quilttAccounts) {
+// Show the account picker for a set of Plaid accounts
+async function openAccountPicker(plaidAccounts) {
   let actualAccounts = [];
   try { actualAccounts = await fetchActualAccounts(); }
   catch (e) {
@@ -895,24 +960,46 @@ async function openAccountPicker(quilttAccounts) {
   }
 
   const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
-  showNewBankPanel(quilttAccounts[0]?.institution);
-  renderNewBankAccountsPicker(quilttAccounts, actualAccounts, existing);
+  showNewBankPanel(plaidAccounts[0]?.institution);
+  renderNewBankAccountsPicker(plaidAccounts, actualAccounts, existing);
 }
 
 async function handleConnectAnotherBank() {
   const btn = document.getElementById('connectAnotherBankBtn');
   btn.disabled = true;
   try {
-    const connectorId = await prepareConnector();
-    const connector = window.Quiltt.connect(connectorId, {
-      onExitSuccess: async (metadata) => {
-        showToast('Bank connected! Waiting for accounts to sync...', 'success');
-        const accounts = await pollQuilttAccountsForConnection(metadata?.connectionId);
-        await openAccountPicker(accounts);
+    if (!window.Plaid) throw new Error('Plaid Link script not loaded. Refresh the page.');
+    const linkToken = await fetchLinkToken();
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: async (publicToken, metadata) => {
+        try {
+          const res = await fetch('/api/plaid/exchange', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              publicToken,
+              institution: metadata?.institution?.name || null,
+            }),
+          });
+          const data = await safeJson(res);
+          if (!res.ok || !data.success) throw new Error(errorMessage(data, 'Token exchange failed'));
+
+          showToast(`Bank connected! (connection ${data.itemCount}/${data.itemLimit})`, 'success');
+          loadItems();
+
+          // Picker: pull this item's accounts (with types/balances) from the server
+          const accounts = await fetchPlaidAccounts();
+          await openAccountPicker(accounts.filter(a => a.itemId === data.itemId));
+        } catch (err) {
+          showToast(`Failed to save connection: ${err.message}`, 'error');
+        }
       },
-      onExitError: () => showToast('Connection flow failed. Try again.', 'error'),
+      onExit: (err) => {
+        if (err) showToast(`Connection flow failed: ${err.display_message || err.error_message || 'try again'}`, 'error');
+      },
     });
-    connector.open();
+    handler.open();
   } catch (error) {
     showToast(error.message, 'error');
   } finally {
@@ -920,27 +1007,27 @@ async function handleConnectAnotherBank() {
   }
 }
 
-// Map accounts from already-connected banks (no new Connector flow)
+// Map accounts from already-connected banks (no new Link flow)
 async function handleMapExistingAccounts() {
   const btn = document.getElementById('mapExistingAccountsBtn');
   btn.disabled = true;
   try {
-    const accounts = await fetchQuilttAccounts();
+    const accounts = await fetchPlaidAccounts();
     await openAccountPicker(accounts);
   } catch (error) {
-    showToast(`Could not load Quiltt accounts: ${error.message}`, 'error');
+    showToast(`Could not load Plaid accounts: ${error.message}`, 'error');
   } finally {
     btn.disabled = false;
   }
 }
 
 async function handleSaveNewBankMappings() {
-  const rows = document.querySelectorAll('#newBankAccountsList [data-quiltt-id]');
+  const rows = document.querySelectorAll('#newBankAccountsList [data-plaid-id]');
   const plans = [];
 
   rows.forEach(row => {
-    const quilttAccountId = row.dataset.quilttId;
-    const connectionId = row.dataset.connectionId || undefined;
+    const plaidAccountId = row.dataset.plaidId;
+    const itemId = row.dataset.itemId || undefined;
     const mode = row.dataset.mode || 'create';
     if (mode === 'skip') return;
 
@@ -948,12 +1035,12 @@ async function handleSaveNewBankMappings() {
       const name = (row.querySelector('.create-name')?.value || '').trim();
       const offbudget = !!row.querySelector('.create-offbudget')?.checked;
       if (!name) return;
-      plans.push({ quilttAccountId, connectionId, mode: 'create', name, offbudget });
+      plans.push({ plaidAccountId, itemId, mode: 'create', name, offbudget });
     } else if (mode === 'existing') {
       const actualAccountId = row.querySelector('.map-actual')?.value;
       const name = (row.querySelector('.map-name')?.value || '').trim();
       if (!actualAccountId) return;
-      plans.push({ quilttAccountId, connectionId, mode: 'existing', name, actualAccountId });
+      plans.push({ plaidAccountId, itemId, mode: 'existing', name, actualAccountId });
     }
   });
 
@@ -991,8 +1078,8 @@ async function handleSaveNewBankMappings() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: p.name,
-            quilttAccountId: p.quilttAccountId,
-            connectionId: p.connectionId,
+            itemId: p.itemId,
+            plaidAccountId: p.plaidAccountId,
             actualAccountId,
             pendingReconcile: needsReconcile,
           }),
@@ -1001,7 +1088,7 @@ async function handleSaveNewBankMappings() {
         if (!mRes.ok) throw new Error(mData.error || 'Mapping save failed');
         created++;
       } catch (err) {
-        console.error('Failed to add mapping for', p.quilttAccountId, err);
+        console.error('Failed to add mapping for', p.plaidAccountId, err);
         failed++;
       }
     }

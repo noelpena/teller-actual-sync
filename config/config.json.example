@@ -1,9 +1,18 @@
 {
-  "quiltt": {
-    "apiSecret": "your_quiltt_api_key_secret_here",
-    "connectorId": "your_quiltt_connector_id_here",
-    "profileId": ""
+  "plaid": {
+    "clientId": "your_plaid_client_id_here",
+    "secret": "your_plaid_secret_here",
+    "env": "sandbox",
+    "daysRequested": 90
   },
+  "items": [
+    {
+      "itemId": "managed_by_app_after_plaid_link",
+      "accessToken": "access-sandbox-...",
+      "institution": "First Platypus Bank",
+      "cursor": null
+    }
+  ],
   "actual": {
     "dataDir": "/app/actual-data",
     "serverURL": "http://your-actual-server:5006",
@@ -14,13 +23,12 @@
     {
       "id": "m_example",
       "name": "My Checking",
-      "connectionId": "conn_xxxxxxxxxxxx",
-      "quilttAccountId": "acct_xxxxxxxxxxxx",
+      "itemId": "managed_by_app_after_plaid_link",
+      "plaidAccountId": "plaid_account_id_here",
       "actualAccountId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     }
   ],
   "sync": {
-    "daysToSync": 7,
     "cronSchedule": "0 8 * * *"
   }
 }
