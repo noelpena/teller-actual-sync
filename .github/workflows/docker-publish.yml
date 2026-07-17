@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/teller-actual-sync
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/plaid-actual-sync
 
 jobs:
   # Build each architecture on its OWN native runner (no QEMU emulation).

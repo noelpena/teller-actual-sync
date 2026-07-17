@@ -2,7 +2,7 @@
 document.querySelectorAll('.tab-button').forEach(button => {
   button.addEventListener('click', () => {
     const tabName = button.dataset.tab;
-    
+
     // Update button states
     document.querySelectorAll('.tab-button').forEach(btn => {
       btn.classList.remove('active', 'text-blue-600', 'border-blue-600');
@@ -10,17 +10,17 @@ document.querySelectorAll('.tab-button').forEach(button => {
     });
     button.classList.add('active', 'text-blue-600', 'border-blue-600');
     button.classList.remove('text-gray-500', 'border-transparent');
-    
+
     // Show/hide tabs
     document.querySelectorAll('.tab-content').forEach(tab => {
       tab.classList.add('hidden');
     });
     document.getElementById(`${tabName}-tab`).classList.remove('hidden');
-    
+
     // Load data for the tab
     if (tabName === 'dashboard') loadDashboard();
     if (tabName === 'config') loadConfig();
-    if (tabName === 'mappings') loadMappings();
+    if (tabName === 'mappings') { loadItems(); loadMappings(); }
     if (tabName === 'logs') loadLogs();
   });
 });
@@ -29,17 +29,27 @@ document.querySelectorAll('.tab-button').forEach(button => {
 function showToast(message, type = 'success') {
   const toast = document.getElementById('toast');
   const toastMessage = document.getElementById('toastMessage');
-  
+
   toastMessage.textContent = message;
   toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg text-white ${
     type === 'success' ? 'bg-green-600' : 'bg-red-600'
   }`;
   toast.classList.remove('hidden');
-  
+
   setTimeout(() => {
     toast.classList.add('hidden');
   }, 3000);
 }
+
+// Environment pill in the navbar
+(function initEnvPill() {
+  const pill = document.getElementById('envPill');
+  const env = window.PLAID_CONFIG?.env || 'sandbox';
+  pill.textContent = env;
+  pill.className = `ml-2 px-2 py-1 text-xs rounded ${
+    env === 'production' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'
+  }`;
+})();
 
 // Load Dashboard
 async function loadDashboard() {
@@ -64,105 +74,96 @@ async function loadDashboard() {
       document.getElementById('lastSyncCount').textContent = '0';
     }
 
-    // Load current config
-    const configRes = await fetch('/admin/api/config');
+    // Load current config + status
+    const [configRes, statusRes] = await Promise.all([
+      fetch('/admin/api/config'),
+      fetch('/api/config/status'),
+    ]);
     const config = await configRes.json();
+    const status = await statusRes.json();
 
-    document.getElementById('configEnv').textContent = config.ENV || 'sandbox';
-    document.getElementById('configTellerAccount').textContent = config.TELLER_ACCOUNT_ID || 'Not set';
+    document.getElementById('configPlaidEnv').textContent = config.PLAID_ENV || 'sandbox';
+    document.getElementById('configItemCount').textContent =
+      status.plaidEnv === 'production'
+        ? `${status.itemCount} / ${status.itemLimit} (Trial plan limit)`
+        : `${status.itemCount}`;
     document.getElementById('configActualServer').textContent = config.ACTUAL_SERVER_URL || 'Not set';
-    document.getElementById('configDaysToSync').textContent = config.DAYS_TO_SYNC || '7';
+    document.getElementById('configDaysRequested').textContent = `${config.PLAID_DAYS_REQUESTED || 90} days`;
     document.getElementById('configCronSchedule').textContent = config.CRON_SCHEDULE || '0 2 * * *';
 
-    // Load setup status
-    await loadSetupStatus();
-
+    renderSetupStatus(status);
   } catch (error) {
     console.error('Error loading dashboard:', error);
     showToast('Error loading dashboard', 'error');
   }
 }
 
-// Load setup status and check configuration completeness
-async function loadSetupStatus() {
-  try {
-    const statusRes = await fetch('/api/config/status');
-    const status = await statusRes.json();
+// Setup status cards
+function renderSetupStatus(status) {
+  const plaidIcon = document.getElementById('plaidStatusIcon');
+  const plaidText = document.getElementById('plaidStatusText');
+  const plaidCard = document.getElementById('plaidStatusCard');
 
-    // Update Teller status
-    const tellerIcon = document.getElementById('tellerStatusIcon');
-    const tellerText = document.getElementById('tellerStatusText');
-    const tellerCard = document.getElementById('tellerStatusCard');
-
-    if (status.hasTellerConfig) {
-      tellerIcon.textContent = '✅';
-      tellerText.textContent = 'Connected and configured';
-      tellerCard.classList.remove('border-yellow-300', 'bg-yellow-50');
-      tellerCard.classList.add('border-green-300', 'bg-green-50');
+  if (status.hasPlaidConfig) {
+    plaidIcon.textContent = '✅';
+    plaidText.textContent = `Connected — ${status.itemCount} bank(s), ${status.validMappingCount} mapped account${status.validMappingCount === 1 ? '' : 's'}`;
+    plaidCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+    plaidCard.classList.add('border-green-300', 'bg-green-50');
+  } else {
+    plaidIcon.textContent = '⚠️';
+    if (!status.hasPlaidCredentials) {
+      plaidText.textContent = 'Not configured - add your Plaid client ID and secret';
+    } else if (status.itemCount === 0) {
+      plaidText.textContent = 'Credentials saved - connect your first bank account';
     } else {
-      tellerIcon.textContent = '⚠️';
-      tellerText.textContent = 'Not configured - Connect your bank account';
-      tellerCard.classList.remove('border-green-300', 'bg-green-50');
-      tellerCard.classList.add('border-yellow-300', 'bg-yellow-50');
+      plaidText.textContent = 'Bank connected - map accounts in the Account Mappings tab';
     }
+    plaidCard.classList.remove('border-green-300', 'bg-green-50');
+    plaidCard.classList.add('border-yellow-300', 'bg-yellow-50');
+  }
 
-    // Update Actual Budget status
-    const actualIcon = document.getElementById('actualStatusIcon');
-    const actualText = document.getElementById('actualStatusText');
-    const actualCard = document.getElementById('actualStatusCard');
+  const actualIcon = document.getElementById('actualStatusIcon');
+  const actualText = document.getElementById('actualStatusText');
+  const actualCard = document.getElementById('actualStatusCard');
 
-    if (status.hasActualConfig) {
-      actualIcon.textContent = '✅';
-      actualText.textContent = 'Connected and configured';
-      actualCard.classList.remove('border-yellow-300', 'bg-yellow-50');
-      actualCard.classList.add('border-green-300', 'bg-green-50');
-    } else {
-      actualIcon.textContent = '⚠️';
-      actualText.textContent = 'Not configured - Set up Actual Budget connection';
-      actualCard.classList.remove('border-green-300', 'bg-green-50');
-      actualCard.classList.add('border-yellow-300', 'bg-yellow-50');
-    }
-
-  } catch (error) {
-    console.error('Error loading setup status:', error);
+  if (status.hasActualConfig) {
+    actualIcon.textContent = '✅';
+    actualText.textContent = 'Connected and configured';
+    actualCard.classList.remove('border-yellow-300', 'bg-yellow-50');
+    actualCard.classList.add('border-green-300', 'bg-green-50');
+  } else {
+    actualIcon.textContent = '⚠️';
+    actualText.textContent = 'Not configured - Set up Actual Budget connection';
+    actualCard.classList.remove('border-green-300', 'bg-green-50');
+    actualCard.classList.add('border-yellow-300', 'bg-yellow-50');
   }
 }
 
-// Test Teller connection
-async function testTellerConnection() {
-  const btn = document.getElementById('testTellerBtn');
+// Test Plaid connection
+async function testPlaidConnection() {
+  const btn = document.getElementById('testPlaidBtn');
   const originalText = btn.textContent;
 
   try {
     btn.textContent = 'Testing...';
     btn.disabled = true;
 
-    // Check if config exists first
-    const statusRes = await fetch('/api/config/status');
-    const status = await statusRes.json();
-
-    if (!status.hasTellerConfig) {
-      showToast('Teller not configured. Please connect your bank account first.', 'error');
-      return;
-    }
-
-    // Call the backend test endpoint (it will load config from file)
-    const testRes = await fetch('/api/test/teller', {
+    const testRes = await fetch('/api/test/plaid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}) // Backend will load all config from file
+      body: JSON.stringify({})
     });
 
     const result = await testRes.json();
 
     if (result.success) {
-      showToast(`✅ Connected to ${result.institution} - ${result.accountName}`, 'success');
+      showToast(`✅ Connected to Plaid (${result.env}) — ${result.itemCount} bank connection(s)`, 'success');
     } else {
       showToast(`❌ Connection failed: ${result.error}`, 'error');
     }
 
   } catch (error) {
-    console.error('Error testing Teller connection:', error);
+    console.error('Error testing Plaid connection:', error);
     showToast(`❌ Failed to test connection: ${error.message}`, 'error');
   } finally {
     btn.textContent = originalText;
@@ -252,41 +253,9 @@ async function loadConfig() {
       }
     }
 
-    // Check certificate status
-    await checkCertificateStatus();
-
   } catch (error) {
     console.error('Error loading config:', error);
     showToast('Error loading configuration', 'error');
-  }
-}
-
-// Check if certificates exist
-async function checkCertificateStatus() {
-  try {
-    const res = await fetch('/admin/api/certificates/status');
-    const status = await res.json();
-
-    const certStatus = document.getElementById('certFileStatus');
-    const keyStatus = document.getElementById('certKeyFileStatus');
-
-    if (status.certificateExists) {
-      certStatus.textContent = '✓ Certificate uploaded';
-      certStatus.className = 'mt-1 text-xs text-green-600';
-    } else {
-      certStatus.textContent = 'No certificate uploaded';
-      certStatus.className = 'mt-1 text-xs text-gray-500';
-    }
-
-    if (status.keyExists) {
-      keyStatus.textContent = '✓ Private key uploaded';
-      keyStatus.className = 'mt-1 text-xs text-green-600';
-    } else {
-      keyStatus.textContent = 'No private key uploaded';
-      keyStatus.className = 'mt-1 text-xs text-gray-500';
-    }
-  } catch (error) {
-    console.error('Error checking certificate status:', error);
   }
 }
 
@@ -307,33 +276,11 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
   e.preventDefault();
 
   try {
-    // First, upload certificate files if selected
-    const certFile = document.getElementById('certFile').files[0];
-    const certKeyFile = document.getElementById('certKeyFile').files[0];
-
-    if (certFile || certKeyFile) {
-      const certFormData = new FormData();
-      if (certFile) certFormData.append('certificate', certFile);
-      if (certKeyFile) certFormData.append('privateKey', certKeyFile);
-
-      const certRes = await fetch('/admin/api/certificates/upload', {
-        method: 'POST',
-        body: certFormData
-      });
-
-      if (!certRes.ok) {
-        throw new Error('Failed to upload certificates');
-      }
-
-      showToast('Certificates uploaded successfully', 'success');
-    }
-
-    // Then save the configuration
     const formData = new FormData(e.target);
     const config = Object.fromEntries(formData.entries());
 
     // Remove password fields that haven't been modified (they contain masked values)
-    const passwordFields = ['TELLER_ACCESS_TOKEN', 'ACTUAL_PASSWORD'];
+    const passwordFields = ['PLAID_SECRET', 'ACTUAL_PASSWORD'];
     passwordFields.forEach(field => {
       if (!modifiedFields.has(field)) {
         delete config[field];
@@ -350,7 +297,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
       showToast('Configuration saved! Restart container for changes to take effect.', 'success');
       setTimeout(() => {
         loadDashboard();
-        loadConfig(); // Reload to show updated certificate status
+        loadConfig();
       }, 1000);
     } else {
       throw new Error('Failed to save configuration');
@@ -372,18 +319,18 @@ async function loadLogs() {
   try {
     const res = await fetch('/admin/api/logs');
     const { logs } = await res.json();
-    
+
     const container = document.getElementById('logsContainer');
-    
+
     if (!logs || logs.length === 0) {
       container.innerHTML = '<div class="p-6 text-center text-gray-500">No sync logs yet</div>';
       return;
     }
-    
+
     container.innerHTML = logs.map(log => {
       const date = new Date(log.timestamp);
       const statusClass = log.status === 'SUCCESS' ? 'text-green-600 bg-green-50' : 'text-red-600 bg-red-50';
-      
+
       return `
         <div class="p-4 hover:bg-gray-50">
           <div class="flex items-center justify-between">
@@ -400,17 +347,17 @@ async function loadLogs() {
             </div>
             ${log.stats ? `
               <div class="text-sm text-gray-600">
-                ${log.stats.added || 0} added, ${log.stats.updated || 0} updated
+                ${log.stats.added || 0} added, ${log.stats.updated || 0} updated${log.stats.deleted ? `, ${log.stats.deleted} deleted` : ''}
               </div>
             ` : ''}
           </div>
         </div>
       `;
     }).join('');
-    
+
   } catch (error) {
     console.error('Error loading logs:', error);
-    document.getElementById('logsContainer').innerHTML = 
+    document.getElementById('logsContainer').innerHTML =
       '<div class="p-6 text-center text-red-500">Error loading logs</div>';
   }
 }
@@ -419,14 +366,14 @@ async function loadLogs() {
 document.getElementById('syncNowBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncNowBtn');
   const originalText = btn.textContent;
-  
+
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner inline-block"></div><span class="ml-2">Syncing...</span>';
-  
+
   try {
     const res = await fetch('/manual-sync', { method: 'POST' });
     const data = await res.json();
-    
+
     if (data.success) {
       showToast('Sync completed successfully!', 'success');
       setTimeout(() => {
@@ -446,8 +393,134 @@ document.getElementById('syncNowBtn').addEventListener('click', async () => {
 });
 
 // Test connection button event listeners
-document.getElementById('testTellerBtn').addEventListener('click', testTellerConnection);
+document.getElementById('testPlaidBtn').addEventListener('click', testPlaidConnection);
 document.getElementById('testActualBtn').addEventListener('click', testActualConnection);
+
+// ===== Plaid Link helpers =====
+
+// Fetch a link token; pass itemId for update mode (repairing a broken Item)
+async function fetchLinkToken(itemId) {
+  const res = await fetch('/api/plaid/link-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(itemId ? { itemId } : {}),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Link token request failed (${res.status})`);
+  return data.linkToken;
+}
+
+// Repair a broken Item via Link update mode. The Item keeps its access_token —
+// the onSuccess public_token must NOT be exchanged.
+async function repairItem(itemId, btn) {
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  try {
+    if (!window.Plaid) throw new Error('Plaid Link script not loaded. Refresh the page.');
+    const linkToken = await fetchLinkToken(itemId);
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: async () => {
+        try {
+          await fetch(`/api/plaid/items/${encodeURIComponent(itemId)}/reconnected`, { method: 'POST' });
+        } catch (_) { /* flag clears on next successful sync anyway */ }
+        showToast('Connection repaired!', 'success');
+        loadItems();
+        loadMappings();
+      },
+      onExit: (err) => {
+        if (err) showToast(`Repair failed: ${err.display_message || err.error_message || 'try again'}`, 'error');
+      },
+    });
+    handler.open();
+  } catch (error) {
+    showToast(`Repair failed: ${error.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+// ===== Bank Connections (Items) =====
+
+async function loadItems() {
+  const container = document.getElementById('itemsTable');
+  const countEl = document.getElementById('itemsCount');
+  try {
+    const res = await fetch('/api/plaid/items');
+    const { items, itemCount, itemLimit } = await res.json();
+
+    const env = window.PLAID_CONFIG?.env || 'sandbox';
+    countEl.textContent = env === 'production'
+      ? `${itemCount} / ${itemLimit} connections used`
+      : `${itemCount} connection${itemCount === 1 ? '' : 's'} (sandbox)`;
+
+    if (!items.length) {
+      container.innerHTML = '<div class="p-6 text-center text-gray-500">No banks connected yet.</div>';
+      return;
+    }
+
+    container.innerHTML = items.map(it => {
+      const badge = it.needsReconnect
+        ? '<span class="px-2 py-0.5 text-xs rounded bg-orange-100 text-orange-800">Needs reconnect</span>'
+        : (it.lastError
+          ? '<span class="px-2 py-0.5 text-xs rounded bg-red-100 text-red-800">Error</span>'
+          : '<span class="px-2 py-0.5 text-xs rounded bg-green-100 text-green-800">OK</span>');
+      const errLine = it.lastError
+        ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(it.lastError).slice(0, 200)}</div>`
+        : '';
+      return `
+        <div class="p-4">
+          <div class="flex items-start justify-between gap-4">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <div class="font-medium">${escapeHtml(it.institution || 'Unknown institution')}</div>
+                ${badge}
+              </div>
+              <div class="text-xs text-gray-500 font-mono mt-1">
+                ${escapeHtml(it.itemId)} · ${it.mappingCount} mapping${it.mappingCount === 1 ? '' : 's'} · last sync ${relativeTime(it.lastSyncedAt)}
+              </div>
+              ${errLine}
+            </div>
+            <div class="flex flex-col gap-1 shrink-0">
+              ${it.needsReconnect ? `<button data-id="${escapeHtml(it.itemId)}" class="repair-item px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>` : ''}
+              <button data-id="${escapeHtml(it.itemId)}" class="remove-item px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200">Remove</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.repair-item').forEach(btn => {
+      btn.addEventListener('click', () => repairItem(btn.dataset.id, btn));
+    });
+    container.querySelectorAll('.remove-item').forEach(btn => {
+      btn.addEventListener('click', () => removeItem(btn.dataset.id));
+    });
+  } catch (error) {
+    console.error('Error loading items:', error);
+    container.innerHTML = '<div class="p-6 text-center text-red-500">Error loading connections</div>';
+  }
+}
+
+async function removeItem(itemId) {
+  const env = window.PLAID_CONFIG?.env || 'sandbox';
+  const warning = env === 'production'
+    ? 'Remove this bank connection?\n\n⚠️ On the Trial plan this does NOT free up a connection slot — the 10-connection limit counts every connection ever made.\n\nIts mappings will be disabled.'
+    : 'Remove this bank connection? Its mappings will be disabled.';
+  if (!confirm(warning)) return;
+
+  try {
+    const res = await fetch(`/api/plaid/items/${encodeURIComponent(itemId)}/remove`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Remove failed');
+    showToast(`Connection removed (${data.mappingsDisabled} mapping(s) disabled)`, 'success');
+    loadItems();
+    loadMappings();
+  } catch (error) {
+    showToast(`Failed: ${error.message}`, 'error');
+  }
+}
 
 // ===== Account Mappings =====
 
@@ -493,10 +566,13 @@ async function loadMappings() {
 
     container.innerHTML = mappings.map(m => {
       const stats = m.lastSyncStats
-        ? `${m.lastSyncStats.added} added, ${m.lastSyncStats.updated} updated`
+        ? `${m.lastSyncStats.added} added, ${m.lastSyncStats.updated} updated${m.lastSyncStats.deleted ? `, ${m.lastSyncStats.deleted} deleted` : ''}`
         : '—';
       const errLine = m.lastError
         ? `<div class="text-xs text-red-600 mt-1">${escapeHtml(m.lastError).slice(0, 200)}</div>`
+        : '';
+      const repairBtn = m.needsReconnect && m.itemId
+        ? `<button data-item="${escapeHtml(m.itemId)}" class="repair-mapping px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200">Repair</button>`
         : '';
       return `
         <div class="p-4" data-mapping-id="${m.id}">
@@ -504,16 +580,18 @@ async function loadMappings() {
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 <div class="font-medium">${escapeHtml(m.name || 'Unnamed')}</div>
+                ${m.institution ? `<span class="text-xs text-gray-500">${escapeHtml(m.institution)}</span>` : ''}
                 ${statusBadge(m)}
               </div>
               <div class="text-xs text-gray-500 font-mono mt-1 space-y-0.5">
-                <div>Teller acct: ${escapeHtml(m.tellerAccountId)} (${escapeHtml(m.tellerAccessTokenMasked || '—')})</div>
+                <div>Plaid acct: ${escapeHtml(m.plaidAccountId)}</div>
                 <div>Actual acct: ${escapeHtml(m.actualAccountId)}</div>
                 <div class="text-gray-400">Last sync: ${relativeTime(m.lastSyncAt)} · ${escapeHtml(stats)}</div>
               </div>
               ${errLine}
             </div>
             <div class="flex flex-col gap-1 shrink-0">
+              ${repairBtn}
               <button data-id="${m.id}" class="sync-mapping px-3 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200">Sync</button>
               <button data-id="${m.id}" class="reconcile-mapping px-3 py-1 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200">Reconcile</button>
               <button data-id="${m.id}" class="edit-mapping px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Edit</button>
@@ -536,6 +614,9 @@ async function loadMappings() {
     });
     container.querySelectorAll('.toggle-mapping').forEach(btn => {
       btn.addEventListener('click', () => toggleMapping(btn.dataset.id, btn.dataset.disabled === '1'));
+    });
+    container.querySelectorAll('.repair-mapping').forEach(btn => {
+      btn.addEventListener('click', () => repairItem(btn.dataset.item, btn));
     });
     container.querySelectorAll('.edit-mapping').forEach(btn => {
       const m = mappings.find(x => x.id === btn.dataset.id);
@@ -588,7 +669,7 @@ async function reconcileSingleMapping(id, btn) {
     if (!data.success) throw new Error(data.error || 'Reconcile failed');
     const r = data.stats?.reconcile;
     if (r && r.delta != null) {
-      showToast(`Reconciled: Δ ${(r.delta / 100).toFixed(2)} (Teller ${r.tellerBalance.toFixed(2)})`, 'success');
+      showToast(`Reconciled: Δ ${(r.delta / 100).toFixed(2)} (bank ${r.bankBalance.toFixed(2)})`, 'success');
     } else {
       showToast('Reconcile completed (already balanced or no delta)', 'success');
     }
@@ -639,7 +720,7 @@ function openEditMapping(mapping, actualAccounts) {
             </select>
           </div>
           <div class="text-xs text-gray-500 font-mono pt-1">
-            Teller account: ${escapeHtml(mapping.tellerAccountId)} (read-only — to change, delete and re-create the mapping)
+            Plaid account: ${escapeHtml(mapping.plaidAccountId)} (read-only — to change, delete and re-create the mapping)
           </div>
           <div class="flex justify-end gap-2 pt-2">
             <button type="button" id="editMappingCancel" class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded">Cancel</button>
@@ -684,8 +765,8 @@ document.getElementById('addMappingForm').addEventListener('submit', async (e) =
   const fd = new FormData(form);
   const payload = {
     name: fd.get('name'),
-    tellerAccessToken: fd.get('tellerAccessToken'),
-    tellerAccountId: fd.get('tellerAccountId'),
+    itemId: fd.get('itemId'),
+    plaidAccountId: fd.get('plaidAccountId'),
     actualAccountId: fd.get('actualAccountId'),
   };
 
@@ -712,10 +793,8 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ===== Connect Another Bank (inline Teller Connect + account picker) =====
+// ===== Connect Another Bank (Plaid Link + account picker) =====
 
-let _newBankToken = null;
-let _newBankAccounts = [];
 let _actualAccountsCache = null;
 
 // Stringify whatever a server might send back as an "error" field
@@ -745,122 +824,107 @@ async function fetchActualAccounts() {
   return _actualAccountsCache;
 }
 
-async function fetchTellerAccountsForToken(accessToken) {
-  const res = await fetch('/api/teller/accounts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken }),
-  });
+async function fetchPlaidAccounts() {
+  const res = await fetch('/api/plaid/accounts');
   const data = await safeJson(res);
   if (!res.ok) {
     const msg = errorMessage(data, `HTTP ${res.status}`);
-    console.error('fetchTellerAccountsForToken failed:', res.status, data);
+    console.error('fetchPlaidAccounts failed:', res.status, data);
     throw new Error(msg);
   }
   return data.accounts || [];
 }
 
 // Smart default: investments and loans go off-budget in Actual; everything else on-budget.
-function suggestOffBudget(tellerAccount) {
-  const t = (tellerAccount?.type || '').toLowerCase();
+function suggestOffBudget(plaidAccount) {
+  const t = (plaidAccount?.type || '').toLowerCase();
   return t === 'investment' || t === 'loan';
 }
 
-function renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existingMappings) {
+function renderNewBankAccountsPicker(plaidAccounts, actualAccounts, existingMappings) {
   const list = document.getElementById('newBankAccountsList');
 
-  const byTellerAccountId = new Map();
-  (existingMappings || []).forEach(m => byTellerAccountId.set(m.tellerAccountId, m));
+  const mappedIds = new Set((existingMappings || []).map(m => m.plaidAccountId));
 
   const actualOptions = actualAccounts
     .filter(a => !a.closed)
     .map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}${a.offbudget ? ' (off-budget)' : ''}</option>`)
     .join('');
 
-  if (tellerAccounts.length === 0) {
-    list.innerHTML = '<div class="text-sm text-gray-500">No accounts returned from Teller for this token.</div>';
+  const unmapped = plaidAccounts.filter(a => !mappedIds.has(a.plaidAccountId));
+  const alreadyMapped = plaidAccounts.filter(a => mappedIds.has(a.plaidAccountId));
+
+  if (unmapped.length === 0) {
+    list.innerHTML = `
+      <div class="text-sm text-gray-500">
+        ${plaidAccounts.length === 0
+          ? 'No accounts found.'
+          : 'All accounts on this connection are already mapped.'}
+      </div>`;
     return;
   }
 
-  const rotationRows = [];
-  const newRows = [];
+  const mappedRows = alreadyMapped.map(a => `
+    <div class="border rounded-md p-3 bg-gray-50 text-sm text-gray-500">
+      ${escapeHtml(a.name || a.plaidAccountId)} — already mapped
+    </div>
+  `);
 
-  tellerAccounts.forEach(t => {
-    const subtitle = [t.institution, t.type, t.subtype, t.last_four ? `••${t.last_four}` : null]
-      .filter(Boolean).join(' · ');
-    const existing = byTellerAccountId.get(t.id);
+  const newRows = unmapped.map(a => {
+    const subtitle = [a.institution, a.subtype || a.type, a.mask ? '••' + a.mask : null].filter(Boolean).join(' · ');
+    const offBudgetDefault = suggestOffBudget(a);
+    return `
+      <div class="border rounded-md p-3" data-plaid-id="${escapeHtml(a.plaidAccountId)}" data-item-id="${escapeHtml(a.itemId || '')}">
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <div class="flex-1 min-w-0">
+            <div class="font-medium">${escapeHtml(a.name || a.plaidAccountId)}</div>
+            <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
+            <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(a.plaidAccountId)}</div>
+          </div>
+          <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="create" selected>Create new Actual account</option>
+            <option value="existing">Use existing Actual account</option>
+            <option value="skip">Skip</option>
+          </select>
+        </div>
 
-    if (existing) {
-      rotationRows.push(`
-        <div class="border rounded-md p-3 bg-blue-50" data-teller-id="${escapeHtml(t.id)}" data-action="rotate">
-          <div class="flex items-start justify-between gap-2">
-            <div class="flex-1">
-              <div class="font-medium">${escapeHtml(t.name || t.id)} <span class="text-xs text-blue-700">(token will be rotated)</span></div>
-              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-              <div class="text-xs font-mono text-gray-400 mt-1">Mapped to: ${escapeHtml(existing.name)} (Actual ${escapeHtml(existing.actualAccountId.slice(0, 8))}…)</div>
-            </div>
-            <label class="text-xs flex items-center gap-1">
-              <input type="checkbox" class="rotate-include" checked> rotate
+        <div class="mode-create grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
+          <div class="md:col-span-7">
+            <label class="block text-xs text-gray-600 mb-1">New Actual account name</label>
+            <input type="text" class="create-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
+              value="${escapeHtml(a.name || '')}">
+          </div>
+          <div class="md:col-span-5">
+            <label class="block text-xs text-gray-600 mb-1">Type</label>
+            <label class="text-sm flex items-center gap-2">
+              <input type="checkbox" class="create-offbudget" ${offBudgetDefault ? 'checked' : ''}>
+              Off-budget account
             </label>
+            <p class="text-xs text-gray-400 mt-1">Off-budget = investments, loans. Leave unchecked for checking, savings, credit cards.</p>
           </div>
         </div>
-      `);
-    } else {
-      const offBudgetDefault = suggestOffBudget(t);
-      newRows.push(`
-        <div class="border rounded-md p-3" data-teller-id="${escapeHtml(t.id)}" data-action="create">
-          <div class="flex items-start justify-between gap-3 mb-2">
-            <div class="flex-1 min-w-0">
-              <div class="font-medium">${escapeHtml(t.name || t.id)}</div>
-              <div class="text-xs text-gray-500">${escapeHtml(subtitle)}</div>
-              <div class="text-xs font-mono text-gray-400 mt-1">${escapeHtml(t.id)}</div>
-            </div>
-            <select class="row-mode shrink-0 px-2 py-1 border border-gray-300 rounded text-sm">
-              <option value="create" selected>Create new Actual account</option>
-              <option value="existing">Use existing Actual account</option>
-              <option value="skip">Skip</option>
-            </select>
-          </div>
 
-          <div class="mode-create grid grid-cols-1 md:grid-cols-12 gap-2 items-center">
-            <div class="md:col-span-7">
-              <label class="block text-xs text-gray-600 mb-1">New Actual account name</label>
-              <input type="text" class="create-name w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                value="${escapeHtml(t.name || '')}">
-            </div>
-            <div class="md:col-span-5">
-              <label class="block text-xs text-gray-600 mb-1">Type</label>
-              <label class="text-sm flex items-center gap-2">
-                <input type="checkbox" class="create-offbudget" ${offBudgetDefault ? 'checked' : ''}>
-                Off-budget account
-              </label>
-              <p class="text-xs text-gray-400 mt-1">Off-budget = investments, loans. Leave unchecked for checking, savings, credit cards.</p>
-            </div>
-          </div>
-
-          <div class="mode-existing hidden">
-            <label class="block text-xs text-gray-600 mb-1">Actual Budget account</label>
-            <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
-              <option value="">— pick one —</option>
-              ${actualOptions}
-            </select>
-            <input type="text" class="map-name hidden" value="${escapeHtml(t.name || '')}">
-          </div>
+        <div class="mode-existing hidden">
+          <label class="block text-xs text-gray-600 mb-1">Actual Budget account</label>
+          <select class="map-actual w-full px-2 py-1 border border-gray-300 rounded text-sm">
+            <option value="">— pick one —</option>
+            ${actualOptions}
+          </select>
+          <input type="text" class="map-name hidden" value="${escapeHtml(a.name || '')}">
         </div>
-      `);
-    }
+      </div>
+    `;
   });
 
   list.innerHTML = [
-    rotationRows.length ? `<div class="text-xs font-semibold text-blue-700 uppercase tracking-wide">Existing mappings — token rotation</div>` : '',
-    ...rotationRows,
-    newRows.length ? `<div class="text-xs font-semibold text-gray-700 uppercase tracking-wide pt-2">New accounts to add</div>` : '',
     ...newRows,
-  ].filter(Boolean).join('');
+    ...mappedRows,
+  ].join('');
 
   // Wire up mode toggles
-  list.querySelectorAll('[data-action="create"]').forEach(row => {
+  list.querySelectorAll('[data-plaid-id]').forEach(row => {
     const sel = row.querySelector('.row-mode');
+    if (!sel) return;
     const createBlock = row.querySelector('.mode-create');
     const existingBlock = row.querySelector('.mode-existing');
     sel.addEventListener('change', () => {
@@ -884,69 +948,86 @@ function hideNewBankPanel() {
   const panel = document.getElementById('newBankAccountsPanel');
   panel.classList.add('hidden');
   document.getElementById('newBankAccountsList').innerHTML = '';
-  _newBankToken = null;
-  _newBankAccounts = [];
 }
 
-async function handleConnectAnotherBank() {
-  if (!window.TellerConnect || !window.TELLER_CONFIG?.applicationId) {
-    showToast('Teller Connect not loaded. Refresh the page.', 'error');
-    return;
-  }
-  if (!window.TELLER_CONFIG.applicationId.startsWith('app_')) {
-    showToast('Teller App ID is not configured. Set it under /setup first.', 'error');
-    return;
-  }
-
-  // Pre-warm Actual accounts so the dropdown is populated quickly
+// Show the account picker for a set of Plaid accounts
+async function openAccountPicker(plaidAccounts) {
   let actualAccounts = [];
   try { actualAccounts = await fetchActualAccounts(); }
   catch (e) {
-    showToast(`Could not load Actual accounts: ${e.message}`, 'error');
+    showToast(`Could not load Actual accounts: ${e.message}. Configure Actual Budget first.`, 'error');
     return;
   }
 
-  const tc = window.TellerConnect.setup({
-    applicationId: window.TELLER_CONFIG.applicationId,
-    environment: window.TELLER_CONFIG.environment || 'sandbox',
-    selectAccount: 'multiple',
-    onSuccess: async (enrollment) => {
-      try {
-        _newBankToken = enrollment.accessToken;
-        const tellerAccounts = await fetchTellerAccountsForToken(_newBankToken);
-        _newBankAccounts = tellerAccounts;
+  const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
+  showNewBankPanel(plaidAccounts[0]?.institution);
+  renderNewBankAccountsPicker(plaidAccounts, actualAccounts, existing);
+}
 
-        const existing = await fetch('/api/mappings').then(r => r.json()).then(d => d.mappings || []);
-        showNewBankPanel(tellerAccounts[0]?.institution);
-        renderNewBankAccountsPicker(tellerAccounts, actualAccounts, existing);
-      } catch (err) {
-        showToast(`Failed to load accounts: ${err.message}`, 'error');
-      }
-    },
-    onFailure: (err) => {
-      console.error('Teller Connect failed:', err);
-    },
-  });
-  tc.open();
+async function handleConnectAnotherBank() {
+  const btn = document.getElementById('connectAnotherBankBtn');
+  btn.disabled = true;
+  try {
+    if (!window.Plaid) throw new Error('Plaid Link script not loaded. Refresh the page.');
+    const linkToken = await fetchLinkToken();
+    const handler = window.Plaid.create({
+      token: linkToken,
+      onSuccess: async (publicToken, metadata) => {
+        try {
+          const res = await fetch('/api/plaid/exchange', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              publicToken,
+              institution: metadata?.institution?.name || null,
+            }),
+          });
+          const data = await safeJson(res);
+          if (!res.ok || !data.success) throw new Error(errorMessage(data, 'Token exchange failed'));
+
+          showToast(`Bank connected! (connection ${data.itemCount}/${data.itemLimit})`, 'success');
+          loadItems();
+
+          // Picker: pull this item's accounts (with types/balances) from the server
+          const accounts = await fetchPlaidAccounts();
+          await openAccountPicker(accounts.filter(a => a.itemId === data.itemId));
+        } catch (err) {
+          showToast(`Failed to save connection: ${err.message}`, 'error');
+        }
+      },
+      onExit: (err) => {
+        if (err) showToast(`Connection flow failed: ${err.display_message || err.error_message || 'try again'}`, 'error');
+      },
+    });
+    handler.open();
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Map accounts from already-connected banks (no new Link flow)
+async function handleMapExistingAccounts() {
+  const btn = document.getElementById('mapExistingAccountsBtn');
+  btn.disabled = true;
+  try {
+    const accounts = await fetchPlaidAccounts();
+    await openAccountPicker(accounts);
+  } catch (error) {
+    showToast(`Could not load Plaid accounts: ${error.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function handleSaveNewBankMappings() {
-  if (!_newBankToken || _newBankAccounts.length === 0) {
-    showToast('No bank connection to save.', 'error');
-    return;
-  }
-  const rows = document.querySelectorAll('#newBankAccountsList [data-teller-id]');
-  const plans = [];        // [{ tellerAccountId, mode, ...modeFields }]
-  const toRotate = [];
+  const rows = document.querySelectorAll('#newBankAccountsList [data-plaid-id]');
+  const plans = [];
 
   rows.forEach(row => {
-    const tellerAccountId = row.dataset.tellerId;
-    const action = row.dataset.action;
-    if (action === 'rotate') {
-      const cb = row.querySelector('.rotate-include');
-      if (cb && cb.checked) toRotate.push(tellerAccountId);
-      return;
-    }
+    const plaidAccountId = row.dataset.plaidId;
+    const itemId = row.dataset.itemId || undefined;
     const mode = row.dataset.mode || 'create';
     if (mode === 'skip') return;
 
@@ -954,44 +1035,27 @@ async function handleSaveNewBankMappings() {
       const name = (row.querySelector('.create-name')?.value || '').trim();
       const offbudget = !!row.querySelector('.create-offbudget')?.checked;
       if (!name) return;
-      plans.push({ tellerAccountId, mode: 'create', name, offbudget });
+      plans.push({ plaidAccountId, itemId, mode: 'create', name, offbudget });
     } else if (mode === 'existing') {
       const actualAccountId = row.querySelector('.map-actual')?.value;
       const name = (row.querySelector('.map-name')?.value || '').trim();
       if (!actualAccountId) return;
-      plans.push({ tellerAccountId, mode: 'existing', name, actualAccountId });
+      plans.push({ plaidAccountId, itemId, mode: 'existing', name, actualAccountId });
     }
   });
 
-  if (plans.length === 0 && toRotate.length === 0) {
-    showToast('Nothing to save. Pick at least one account or rotation.', 'error');
+  if (plans.length === 0) {
+    showToast('Nothing to save. Pick at least one account.', 'error');
     return;
   }
 
   setSaveBusy(true);
-  let rotated = 0, created = 0, accountsCreated = 0, failed = 0;
+  let created = 0, accountsCreated = 0, failed = 0;
 
   try {
-    // 1. Rotate tokens first so existing mappings come back online quickly
-    if (toRotate.length > 0) {
-      try {
-        const res = await fetch('/api/mappings/rotate-token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ newAccessToken: _newBankToken, tellerAccountIds: toRotate }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Rotation failed');
-        rotated = data.rotated;
-      } catch (err) {
-        console.error('Rotation failed:', err);
-        failed += toRotate.length;
-      }
-    }
-
-    // 2. For each plan: ensure we have an Actual account ID, then create the mapping.
-    //    For newly-created accounts, mark pendingReconcile so the next sync auto-balances
-    //    against Teller's reported balance.
+    // For each plan: ensure we have an Actual account ID, then create the mapping.
+    // For newly-created accounts, mark pendingReconcile so the next sync auto-balances
+    // against the bank's reported balance.
     for (const p of plans) {
       try {
         let actualAccountId = p.actualAccountId;
@@ -1014,9 +1078,9 @@ async function handleSaveNewBankMappings() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: p.name,
-            tellerAccountId: p.tellerAccountId,
+            itemId: p.itemId,
+            plaidAccountId: p.plaidAccountId,
             actualAccountId,
-            tellerAccessToken: _newBankToken,
             pendingReconcile: needsReconcile,
           }),
         });
@@ -1024,7 +1088,7 @@ async function handleSaveNewBankMappings() {
         if (!mRes.ok) throw new Error(mData.error || 'Mapping save failed');
         created++;
       } catch (err) {
-        console.error('Failed to add mapping for', p.tellerAccountId, err);
+        console.error('Failed to add mapping for', p.plaidAccountId, err);
         failed++;
       }
     }
@@ -1033,7 +1097,6 @@ async function handleSaveNewBankMappings() {
   }
 
   const parts = [];
-  if (rotated) parts.push(`rotated ${rotated} token${rotated === 1 ? '' : 's'}`);
   if (accountsCreated) parts.push(`created ${accountsCreated} Actual account${accountsCreated === 1 ? '' : 's'}`);
   if (created) parts.push(`added ${created} mapping${created === 1 ? '' : 's'}`);
   if (failed) parts.push(`${failed} failed`);
@@ -1054,6 +1117,7 @@ function setSaveBusy(busy) {
 }
 
 document.getElementById('connectAnotherBankBtn')?.addEventListener('click', handleConnectAnotherBank);
+document.getElementById('mapExistingAccountsBtn')?.addEventListener('click', handleMapExistingAccounts);
 document.getElementById('newBankCancelBtn')?.addEventListener('click', hideNewBankPanel);
 document.getElementById('newBankSaveBtn')?.addEventListener('click', handleSaveNewBankMappings);
 

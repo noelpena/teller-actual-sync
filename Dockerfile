@@ -22,8 +22,7 @@ COPY . .
 RUN mkdir -p /app/config \
     /app/logs \
     /app/transaction-data \
-    /app/static \
-    /app/certs
+    /app/static
 
 # Set permissions
 RUN chmod -R 755 /app
@@ -36,4 +35,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:8001/ping', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
 # Start the application
-CMD ["node", "teller.js"]
+CMD ["node", "server.js"]

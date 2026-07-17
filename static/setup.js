@@ -39,8 +39,6 @@ document.addEventListener('DOMContentLoaded', function() {
       serverURL: document.getElementById('serverURL').value.trim(),
       password: document.getElementById('password').value,
       syncId: document.getElementById('syncId').value.trim(),
-      accountId: document.getElementById('accountId').value.trim(),
-      daysToSync: document.getElementById('daysToSync').value || '7',
       cronSchedule: document.getElementById('cronSchedule').value.trim() || '0 2 * * *'
     };
   }
@@ -89,7 +87,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const formData = getFormData();
 
     // Validate required fields
-    if (!formData.serverURL || !formData.password || !formData.syncId || !formData.accountId) {
+    if (!formData.serverURL || !formData.password || !formData.syncId) {
       showStatus('Please fill in all required fields', 'error');
       return;
     }
@@ -106,10 +104,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidPattern.test(formData.syncId)) {
       showStatus('Invalid Sync ID format. Should be a UUID.', 'error');
-      return;
-    }
-    if (!uuidPattern.test(formData.accountId)) {
-      showStatus('Invalid Account ID format. Should be a UUID.', 'error');
       return;
     }
 
@@ -161,21 +155,13 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
-  // Load existing config if available (for editing)
+  // Redirect to admin when everything is already configured
   async function loadExistingConfig() {
     try {
       const response = await fetch(`${BASE_URL}/api/config/status`);
       const status = await response.json();
 
-      // If Teller is not configured, redirect to connect first
-      if (!status.hasTellerConfig) {
-        console.log('Teller not configured, redirecting to /connect');
-        window.location.href = '/connect';
-        return;
-      }
-
-      // If both Teller and Actual are configured, redirect to admin
-      if (status.hasActualConfig) {
+      if (status.hasActualConfig && status.hasPlaidConfig) {
         console.log('Configuration complete, redirecting to /admin');
         window.location.href = '/admin';
       }

@@ -1,314 +1,196 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connect Your Bank - Plaid-Actual Sync</title>
   <script>
-    window.TELLER_CONFIG = {
-      applicationId: "{{ app_id }}",
-      environment: "{{ environment }}"
+    window.PLAID_CONFIG = {
+      env: "{{ plaid_env }}",
+      hasCredentials: {{ has_credentials }}
     };
   </script>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <link href="/static/connect.css" rel="stylesheet">
-  <link href="https://rsms.me/inter/inter.css" rel="stylesheet">
-  <link href="https://unpkg.com/tailwindcss@2.2.15/dist/tailwind.min.css" rel="stylesheet">
-  <link href="https://unpkg.com/@tailwindcss/forms@0.3.3/dist/forms.min.css" rel="stylesheet">
-
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script>hljs.highlightAll();</script>
-
-  <!-- Empty favicon to prevent failing requests to /favicon.ico -->
-  <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">
-
-  <title>Teller Demo</title>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      padding: 40px;
+      max-width: 600px;
+      width: 100%;
+    }
+    h1 { color: #667eea; margin-bottom: 10px; font-size: 1.8rem; }
+    p { color: #666; margin-bottom: 20px; line-height: 1.6; }
+    .form-group { margin-bottom: 20px; }
+    label { display: block; font-weight: 600; margin-bottom: 8px; color: #444; }
+    input[type="text"], input[type="password"], input[type="number"], select {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 1rem;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus { outline: none; border-color: #667eea; }
+    .help-text { font-size: 0.85rem; color: #999; margin-top: 5px; }
+    .help-text a { color: #667eea; text-decoration: none; }
+    .help-text a:hover { text-decoration: underline; }
+    .info-box {
+      background: #e8f4fd;
+      border-left: 4px solid #2196F3;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
+    .info-box strong { display: block; margin-bottom: 5px; color: #1976D2; }
+    .info-box p { margin: 0; font-size: 0.9rem; color: #555; }
+    .warn-box {
+      background: #fff8e1;
+      border-left: 4px solid #f59e0b;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      color: #664d03;
+    }
+    .env-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
+    .env-badge.sandbox { background: #e0f2fe; color: #075985; }
+    .env-badge.production { background: #dcfce7; color: #14532d; }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+      margin-top: 10px;
+    }
+    .status-message {
+      padding: 12px;
+      border-radius: 8px;
+      margin-top: 15px;
+      display: none;
+    }
+    .status-message.success { background: #d4edda; color: #155724; }
+    .status-message.error { background: #f8d7da; color: #721c24; }
+    .hidden { display: none !important; }
+    .account-list { margin: 15px 0; }
+    .account-item {
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .account-item .name { font-weight: 600; color: #333; }
+    .account-item .meta { font-size: 0.85rem; color: #888; }
+    .links { margin-top: 20px; text-align: center; font-size: 0.9rem; }
+    .links a { color: #667eea; text-decoration: none; margin: 0 8px; }
+  </style>
 </head>
+<body>
+  <div class="container">
+    <!-- Step 1: Plaid credentials (shown when client ID / secret missing) -->
+    <div id="credentials-step" class="hidden">
+      <h1>🔑 Plaid Setup</h1>
+      <p>Configure your Plaid API credentials before linking your bank account.</p>
 
-<body class="flex flex-col h-screen overflow-hidden">
-  <!-- Top nav -->
-  <nav class="bg-white shadow h-16 flex-shrink-0">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex justify-between items-center">
-      <img class="h-10" src="https://cdn.teller.io/web/images/logo-7fcc37ce2fdf274cfa679546f5d738d4.svg" />
-      <button type="button" id="teller-connect"
-        class="px-4 py-2 rounded-md text-white bg-blue-600 shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-        Connect
-      </button>
-    </div>
-  </nav>
+      <div class="info-box">
+        <strong>Where do I get these?</strong>
+        <p>
+          Sign up at the <a href="https://dashboard.plaid.com/signup" target="_blank">Plaid Dashboard</a>
+          (free Trial plan). Your <em>client ID</em> and per-environment <em>secrets</em> are under
+          Developers → Keys.
+        </p>
+      </div>
 
-  <!-- Main two-column app area (fills remaining height, bottom-padded to avoid fixed console+footer overlap) -->
-<div id="app-shell" class="flex-1 overflow-hidden h-screen">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full">
-    <div class="h-full flex gap-4 overflow-hidden">
-      <div id="accounts" class="w-1/3 min-w-[260px] h-full overflow-y-auto p-4 border-r"></div>
-      <div id="logs" class="flex-1 h-full overflow-y-auto p-4"></div>
-    </div>
-  </div>
-</div>
-
-  <!-- Payee modal -->
-  <template id="payee-modal-template">
-    <div id="payee-modal" class="fixed z-10 inset-0 overflow-y-auto" aria-labelledby="create-payee" role="dialog"
-      aria-modal="true">
-      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
-        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-
-        <div id="payee-modal-content"
-          class="inline-block align-bottom bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-sm sm:w-full sm:p-6">
-          <div>
-            <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-blue-100">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" viewBox="0 0 20 20"
-                fill="currentColor">
-                <path
-                  d="M8 9a3 3 0 100-6 3 3 0 000 6zM8 11a6 6 0 016 6H2a6 6 0 016-6zM16 7a1 1 0 10-2 0v1h-1a1 1 0 100 2h1v1a1 1 0 102 0v-1h1a1 1 0 100-2h-1V7z" />
-              </svg>
-            </div>
-            <div class="flex flex-col mt-3 sm:mt-5 space-y-2">
-              <div>
-                <label for="payee-name" class="block text-sm font-medium text-gray-700">Name</label>
-                <input type="text" name="payee-name" id="payee-name"
-                  class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                  required>
-              </div>
-
-              <div>
-                <label for="payee-email" class="block text-sm font-medium text-gray-700">Email</label>
-                <input type="email" name="payee-email" id="payee-email"
-                  class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                  required>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-5 sm:mt-6">
-            <button id="submit-payee" type="button"
-              class="inline-flex justify-center w-full rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm">
-              Create Payee
-            </button>
-          </div>
+      <form id="credentialsForm">
+        <div class="form-group">
+          <label for="clientId">Client ID</label>
+          <input type="text" id="clientId" autocomplete="off" required>
         </div>
+        <div class="form-group">
+          <label for="secret">Secret</label>
+          <input type="password" id="secret" autocomplete="off" required>
+          <div class="help-text">Use the secret matching the environment you pick below</div>
+        </div>
+        <div class="form-group">
+          <label for="env">Environment</label>
+          <select id="env">
+            <option value="sandbox" selected>Sandbox (test banks, fake data)</option>
+            <option value="production">Production (real banks — uses Trial plan Item slots)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="daysRequested">Transaction history to request (days)</label>
+          <input type="number" id="daysRequested" value="90" min="30" max="730">
+          <div class="help-text">30–730. Set at link time — more history = slower first sync</div>
+        </div>
+        <button type="submit" class="btn" id="credentialsBtn">Save &amp; Continue</button>
+      </form>
+    </div>
+
+    <!-- Step 2: launch Plaid Link -->
+    <div id="connect-step" class="hidden">
+      <h1>🏦 Connect Your Bank<span id="envBadge" class="env-badge"></span></h1>
+      <p>
+        Securely link a bank account through Plaid. Your bank credentials go to
+        Plaid, never to this app — only account IDs are stored here.
+      </p>
+      <div id="trialWarning" class="warn-box hidden">
+        ⚠️ <strong>Production:</strong> the free Trial plan allows <strong>10 bank connections, lifetime</strong>
+        — removing one does not free the slot. Test in Sandbox first.
+      </div>
+      <button type="button" class="btn" id="connectBtn">Connect Bank Account</button>
+      <div class="links">
+        <a href="/setup">Skip to Actual Budget setup →</a>
+        <a href="/admin">Admin dashboard</a>
       </div>
     </div>
-  </template>
 
-  <!-- Payment modal -->
-  <template id="payment-modal-template">
-    <div id="payment-modal" class="fixed z-10 inset-0 overflow-y-auto" aria-labelledby="create-payment" role="dialog"
-      aria-modal="true">
-      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
-        <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
-        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
-
-        <div id="payment-modal-content"
-          class="inline-block align-bottom bg-white rounded-lg px-4 pt-5 pb-4 text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-sm sm:w-full sm:p-6">
-          <div>
-            <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-blue-100">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" viewBox="0 0 20 20"
-                fill="currentColor">
-                <path
-                  d="M8 5a1 1 0 100 2h5.586l-1.293 1.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L13.586 5H8zM12 15a1 1 0 100-2H6.414l1.293-1.293a1 1 0 10-1.414-1.414l-3 3a1 1 0 000 1.414l3 3a1 1 0 001.414-1.414L6.414 15H12z" />
-              </svg>
-            </div>
-            <div class="flex flex-row mt-3 sm:mt-5 space-x-2">
-              <div>
-                <label for="payment-memo" class="block text-sm font-medium text-gray-700">Memo</label>
-                <input type="text" name="payment-memo" id="payment-memo"
-                  class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                  required>
-              </div>
-
-              <div class="w-32">
-                <label for="payment-amount" class="block text-sm font-medium text-gray-700">Amount</label>
-                <input type="number" step="0.01" min="0" name="payment-amount" id="payment-amount"
-                  class="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                  required>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-5 sm:mt-6">
-            <button id="submit-payment" type="button"
-              class="inline-flex justify-center w-full rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm">
-              Create Payment
-            </button>
-          </div>
-        </div>
-      </div>
+    <!-- Step 3: success — show linked accounts, continue -->
+    <div id="success-step" class="hidden">
+      <h1>🎉 Bank Connected!</h1>
+      <p id="successSubtitle">Accounts on this connection:</p>
+      <div id="accountList" class="account-list"></div>
+      <button type="button" class="btn" id="continueBtn">Continue →</button>
+      <button type="button" class="btn btn-secondary" id="connectAnotherBtn">Connect Another Bank</button>
     </div>
-  </template>
 
-  <!-- Account card -->
-  <template id="account-template">
-    <div class="account mb-8">
-      <div class="bg-white overflow-hidden shadow rounded-lg divide-y divide-gray-200">
-        <div class="title px-4 py-5 sm:px-6 text-lg"></div>
-        <div class="px-4 py-5 sm:p-6">
-          <span
-            class="institution inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-gray-100 text-gray-800"></span>
-          <span
-            class="type inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-gray-100 text-gray-800"></span>
-          <span
-            class="subtype inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-gray-100 text-gray-800"></span>
-        </div>
-      </div>
-      <div class="flex mt-4">
-        <button type="button"
-          class="details inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full mx-2">
-          Details
-        </button>
-        <button type="button"
-          class="balances inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full">
-          Balances
-        </button>
-        <button type="button"
-          class="transactions inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full mx-2">
-          Transactions
-        </button>
-      </div>
-      <div class="flex mt-2">
-        <button type="button"
-          class="create-payee inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full mx-2">
-          New Payee
-        </button>
-        <button type="button"
-          class="payees inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full mr-2">
-          Payees
-        </button>
-      </div>
-    </div>
-  </template>
-
-  <!-- Log row -->
-  <template id="log-template">
-    <div class="log flex justify-between items-center mb-2">
-      <div>
-        <div class="resource text-xl font-semibold"></div>
-        <div class="timestamp text-sm text-gray-400"></div>
-      </div>
-      <div class="http font-mono text-xs text-gray-400"></div>
-    </div>
-  </template>
-
-  <!-- Detail card -->
-  <template id="detail-template">
-    <div class="detail bg-white overflow-hidden shadow rounded-lg mb-6">
-      <div class="flex justify-around px-4 py-3">
-        <div class="flex items-center">
-          <span>Account Number</span>
-          <span
-            class="number ml-2 inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-        <div class="flex items-center">
-          <span>ACH</span>
-          <span
-            class="ach ml-2 inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Balance card -->
-  <template id="balance-template">
-    <div class="balance bg-white overflow-hidden shadow rounded-lg mb-6">
-      <div class="flex justify-around px-4 py-3">
-        <div class="flex items-center">
-          <span>Available</span>
-          <span
-            class="available ml-2 inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-        <div class="flex items-center">
-          <span>Ledger</span>
-          <span
-            class="ledger ml-2 inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Transaction card -->
-  <template id="transaction-template">
-    <div class="transaction mb-3">
-      <div class="bg-white overflow-hidden shadow rounded-lg">
-        <div class="flex items-center px-4 py-3">
-          <div class="flex-grow">
-            <div class="description"></div>
-            <div class="date text-sm text-gray-400"></div>
-          </div>
-          <span
-            class="amount inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Payee card -->
-  <template id="payee-template">
-    <div class="payee mb-3">
-      <div class="bg-white overflow-hidden shadow rounded-lg">
-        <div class="flex items-center px-4 py-3">
-          <div class="flex-grow">
-            <div class="name"></div>
-            <div class="address text-sm text-gray-400"></div>
-          </div>
-          <button type="button"
-            class="create-payment inline-flex items-center px-3 py-2 border border-transparent text-sm leading-4 font-medium rounded-md text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-            New Payment
-          </button>
-        </div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Payment row -->
-  <template id="payment-template">
-    <div class="payment mb-3">
-      <div class="bg-white overflow-hidden shadow rounded-lg">
-        <div class="flex items-center px-4 py-3">
-          <div class="flex-grow">
-            Payment sent to <span class="name"></span>.
-          </div>
-          <span
-            class="amount inline-flex items-center px-3 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800"></span>
-        </div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Resizable console drawer (fixed above footer) -->
-  <div id="console-container" class="border-t border-gray-600 flex flex-col h-48 hidden"
-    style="height:300px; bottom:0px;">
-    <!-- This strip is *always visible* -->
-    <div id="console-resizer" class="h-3 bg-gray-700 cursor-ns-resize"></div>
-    <!-- This part can collapse -->
-    <div id="console-log" class="flex-1 overflow-y-auto bg-black text-green-400 font-mono text-xs p-2"></div>
+    <div id="statusMessage" class="status-message"></div>
   </div>
 
-  <!-- Fixed status bar footer -->
-    <div id="statusbar" class="fixed bottom-0 w-full">
-      <div class="mx-auto py-1 bg-gray-200">
-        <div class="flex flex-row justify-around items-center">
-          <div>
-            User – <span id="user-id" class="font-mono">not_available</span>
-          </div>
-          <div>
-            Access Token – <span id="access-token" class="font-mono">not_available</span>
-          </div>
-          <div id="continue-setup-container" class="hidden">
-            <button type="button" id="continue-setup-btn"
-              class="px-4 py-1 rounded-md text-white bg-green-600 shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
-              Continue to Setup →
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-
-  <script src="https://cdn.teller.io/connect/connect.js"></script>
   <script src="/static/connect.js"></script>
 </body>
-
 </html>
