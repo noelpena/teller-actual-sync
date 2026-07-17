@@ -46,8 +46,8 @@ Automated bank transaction sync from [Plaid](https://plaid.com) to [Actual Budge
 ### Step 2: Run the Container
 
 ```bash
-git clone https://github.com/noelpena/teller-actual-sync.git
-cd teller-actual-sync
+git clone https://github.com/noelpena/plaid-actual-sync.git
+cd plaid-actual-sync
 docker compose up -d --build
 ```
 
@@ -95,10 +95,10 @@ Each sync run, per bank connection (Plaid "Item"):
 
 ## 🐳 Docker Deployment
 
-> **Build from source.** There is no published Plaid image yet — the
-> `noelpena/teller-actual-sync` image on Docker Hub is still the old Teller v1.
-> [docker-compose.yml](docker-compose.yml) is configured to build locally, so
-> `docker compose up -d --build` is all you need.
+Prebuilt multi-arch images (amd64/arm64) are published to Docker Hub as
+`noelpena/plaid-actual-sync:latest` by CI on every push to `main`.
+[docker-compose.yml](docker-compose.yml) pulls that image by default; uncomment
+`build: .` to build from source instead.
 
 ### Using Docker Compose (Recommended)
 
@@ -113,17 +113,14 @@ volumes:
 ```
 
 ```bash
-git clone -b plaid-migration https://github.com/noelpena/teller-actual-sync.git
-cd teller-actual-sync
-docker compose up -d --build
+git clone https://github.com/noelpena/plaid-actual-sync.git
+cd plaid-actual-sync
+docker compose up -d          # add --build to build from source
 ```
 
 ### Using Docker Run
 
-Build the image first, then run it:
-
 ```bash
-docker build -t plaid-actual-sync:local .
 docker run -d \
   --name plaid-actual-sync \
   -p 8001:8001 \
@@ -132,7 +129,7 @@ docker run -d \
   -v $(pwd)/transaction-data:/app/transaction-data \
   -v $(pwd)/actual-data:/app/actual-data \
   -e TZ=America/New_York \
-  plaid-actual-sync:local
+  noelpena/plaid-actual-sync:latest
 ```
 
 ## 🔧 Configuration
@@ -193,18 +190,17 @@ When a bank login breaks (changed password, expired MFA), the connection and its
 
 ## 🏠 CasaOS Installation
 
-Because the image is built from source (no published Plaid image yet), build it
-on the CasaOS host over SSH rather than importing through the app store:
+Import [docker-compose.yml](docker-compose.yml) through CasaOS's **Install a
+customized app** — it pulls `noelpena/plaid-actual-sync:latest` and the
+`x-casaos` metadata auto-configures the web UI port and icon.
+
+Or build on the host over SSH:
 
 ```bash
-git clone -b plaid-migration https://github.com/noelpena/teller-actual-sync.git
-cd teller-actual-sync
+git clone https://github.com/noelpena/plaid-actual-sync.git
+cd plaid-actual-sync
 docker compose up -d --build
 ```
-
-CasaOS auto-detects the running container and shows it on the dashboard. The
-`x-casaos` metadata in the compose file (web UI port, icon) applies if you later
-publish an image and import it through **Install a customized app**.
 
 ## 🔄 Migrating from Teller (v1.x)
 
@@ -294,8 +290,8 @@ curl http://localhost:8001/sync-logs
 ## 🤝 Contributing
 
 ```bash
-git clone https://github.com/noelpena/teller-actual-sync.git
-cd teller-actual-sync
+git clone https://github.com/noelpena/plaid-actual-sync.git
+cd plaid-actual-sync
 npm install
 npm run dev          # requires config/config.json or env vars
 ```
